@@ -1,10 +1,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { CallToolResultSchema, type CallToolResult, type Tool } from '@modelcontextprotocol/sdk/types.js';
-import { mkdir, realpath, stat, chmod } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { MAX_MESSAGE_BYTES, REMOTE_TOOL_NAMES, ENGINE_CALL_TIMEOUT_MS } from './protocol.js';
+import { ensurePrivateDirectory } from './private-storage.js';
 
 export interface EngineOptions { stateDir:string; workspace:string; }
 export class EngineCallError extends Error {
@@ -32,8 +33,7 @@ export class LocalEngine {
     const state = path.resolve(this.options.stateDir);
     const workspace = await realpath(path.resolve(this.options.workspace));
     if(!(await stat(workspace)).isDirectory()) throw new Error('Workspace must be a directory');
-    await mkdir(state,{recursive:true,mode:0o700});
-    await chmod(state,0o700);
+    ensurePrivateDirectory(state);
     const stateDir=await realpath(state);
     if(this.closed) throw new Error('Local engine is closed');
     const environment = Object.fromEntries(Object.entries(process.env).filter((entry):entry is [string,string]=>entry[1]!==undefined));

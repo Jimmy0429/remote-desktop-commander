@@ -1,6 +1,5 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -50,7 +49,7 @@ export async function createControlServer(options: ControlServerOptions): Promis
   const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
   const publicUrl = options.publicUrl ? safeRemoteUrl(options.publicUrl) : undefined;
   if (!isLoopback && publicUrl?.protocol !== 'https:') throw new Error('Non-loopback binding requires an HTTPS public URL and a TLS reverse proxy.');
-  const dataDir = resolve(options.dataDir); mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const dataDir = resolve(options.dataDir);
   const release = acquireServerLock(dataDir);
   let registry: DeviceRegistry;
   try {

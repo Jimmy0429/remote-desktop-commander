@@ -210,6 +210,7 @@ test('the lifetime lock uses DELETE mode without an uncommitted journal', async 
   const dataDir = await mkdtemp(join(tmpdir(), 'jrc-lock-mode-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   const path = join(dataDir, 'server-lock.sqlite');
+  await writeFile(path, '', { mode: 0o600 });
   const seed = new DatabaseSync(path);
   seed.exec('PRAGMA journal_mode = WAL; CREATE TABLE fixture(value TEXT);');
   seed.close();

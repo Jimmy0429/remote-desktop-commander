@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { ensurePrivateDirectory, assertPrivateFile } from './private-storage.js';
 
 export interface PublicDevice {
   id: string;
@@ -147,19 +148,18 @@ export class DeviceRegistry {
 
   static open(dataDir: string, options: RegistryOptions = {}): DeviceRegistry {
     const directory = path.resolve(dataDir);
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    ensurePrivateDirectory(directory);
     const directoryInfo = fs.lstatSync(directory);
     if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw new Error('Registry directory must be a real directory');
-    if (process.platform !== 'win32') fs.chmodSync(directory, 0o700);
     const file = path.join(directory, 'registry.json');
     let state: RegistryState = { version: 1, devices: [], audit: [] };
     if (fs.existsSync(file)) {
       const info = fs.lstatSync(file);
       if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_STATE_BYTES) throw new Error('Invalid registry state file');
+      assertPrivateFile(file);
       let parsed: unknown;
       try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error('Invalid registry state JSON; restore a trusted backup before starting'); }
       state = decodeState(parsed);
-      if (process.platform !== 'win32') fs.chmodSync(file, 0o600);
     }
     return new DeviceRegistry(file, state, options.now ?? Date.now);
   }

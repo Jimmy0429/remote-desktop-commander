@@ -34,6 +34,40 @@ node dist/npm-scripts/verify-ripgrep.js
 
 Skipping dependency lifecycle scripts avoids the upstream package's installation tracking and automatic setup steps. Then explicitly rebuild only the trusted `@vscode/ripgrep` package: its installer downloads the platform-specific search binary needed by agents. The explicit build compiles the application, and the last command checks that ripgrep is available. Complete these steps on every computer that will run an agent. The private entrypoint is `npm run self-host -- …`, or `node dist/self-host/cli.js …` after building.
 
+### Windows storage and first pilot
+
+Use a supported Windows installation with local NTFS storage and Windows PowerShell available. Run the agent as your normal user. Windows defaults now put state under `%LOCALAPPDATA%\JimmyRemoteCommander`, outside the checkout: `server\owner-token`, `agent.json`, and `pairing-code`. Explicit path options still override the defaults. The Unix examples below use explicit `.self-host` paths; for Windows prefer the LocalAppData defaults or explicit paths there.
+
+New state directories receive a protected Windows DACL before secrets are written. Existing storage must already grant access only to the current user, SYSTEM, and Administrators. Credential reads recheck the file and its parent; links, reparse paths, unknown owners, broad grants, unavailable ACLs, and unsafe parent replacement permissions are refused. Names are compared by SID, not localized account names. This protects against other unprivileged accounts; it does not protect secrets from an administrator or another process running as you.
+
+If an existing dedicated state directory has unsafe permissions, stop its processes and explicitly repair it:
+
+```powershell
+node dist/self-host/cli.js protect --data-dir "$env:LOCALAPPDATA\JimmyRemoteCommander\server"
+```
+
+`protect` is limited to existing directories containing recognizable application state. It refuses home/volume/repository roots, unrelated files, and reparse paths. It does not silently change workspace permissions. For a custom credential filename or unrelated contents, create a fresh dedicated directory and move only the required state after protecting it. Keep state on local storage, outside OneDrive/shared folders.
+
+For a disposable same-computer pilot, initialize and start the server in one PowerShell window:
+
+```powershell
+node dist/self-host/cli.js init
+node dist/self-host/cli.js serve
+```
+
+In another window, create a test workspace and pair the local agent:
+
+```powershell
+$jrcWorkspace = Join-Path $env:USERPROFILE 'Documents\CommanderPilot'
+New-Item -ItemType Directory -Force -Path $jrcWorkspace | Out-Null
+node dist/self-host/cli.js pair --server http://127.0.0.1:8787 --token-file "$env:LOCALAPPDATA\JimmyRemoteCommander\server\owner-token"
+node dist/self-host/cli.js enroll --server http://127.0.0.1:8787
+Remove-Item -LiteralPath "$env:LOCALAPPDATA\JimmyRemoteCommander\pairing-code"
+node dist/self-host/cli.js agent --workspace $jrcWorkspace
+```
+
+Loopback connects only this same computer. Use the configured HTTPS origin when the server is on a different machine. No startup task or Windows service is installed by these commands; keep both processes running. See [tomorrow's handoff](../CONTINUE-TOMORROW.md) before enrolling the owner's real computer.
+
 ## Start locally
 
 Initialize the server once:
@@ -95,6 +129,32 @@ Authorization: Bearer <owner token>
 ```
 
 Use a client that can configure an authorization header securely. Supply the token through that client's secret mechanism instead of committing it to a project file. This private release does not implement OAuth browser sign-in, public registration, or the vendor's hosted account system. ChatGPT/plugin sign-in is not established by running a local MCP test; a client that requires OAuth needs additional integration.
+
+### Desktop clients using stdio
+
+Desktop clients that launch a local MCP process can use the bridge. Configure the client to launch **Node directly**, with the compiled CLI and `bridge` arguments; do not launch through `npm`, whose status messages can corrupt MCP stdout. The bridge reads the credential from its private file. No token is placed in this configuration or the process arguments.
+
+Example Windows configuration (replace the paths and server origin):
+
+```json
+{
+  "mcpServers": {
+    "jimmy-remote-commander": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\YOU\\Projects\\JimmyRemoteCommander\\dist\\self-host\\cli.js",
+        "bridge",
+        "--server", "https://commander.example.com",
+        "--token-file", "C:\\Users\\YOU\\AppData\\Local\\JimmyRemoteCommander\\client\\owner-token"
+      ]
+    }
+  }
+}
+```
+
+The credential file must contain the server's actual owner token and pass the same private-storage checks. Protect the dedicated client directory **before** transferring the token. The configuration format belongs to the chosen client; a successful bridge test is not proof that every client or the ChatGPT cloud connector accepts this format.
+
+The bridge exposes the private server's tool catalog, supports asynchronous call-ID polling, refuses redirects, and caps request/response sizes and waiting time. It does not retry tool submissions. A failed response may leave execution uncertain; inspect device state before repeating a write. Closing the desktop client closes its bridge, not the remote agent. The owner token still controls all enrolled devices; separate revocable client credentials are not implemented yet.
 
 Start with `list_devices`, then pass the intended `deviceId` with every device tool call, even when only one computer is online. An offline device never causes work to switch to another computer. The server advertises a stable, server-owned catalog even while all devices are offline; a call still requires its selected device to be connected and support that tool.
 

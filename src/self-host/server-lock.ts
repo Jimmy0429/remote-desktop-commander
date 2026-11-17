@@ -2,6 +2,7 @@ import { closeSync, fsyncSync, linkSync, lstatSync, openSync, readFileSync, unli
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { ensurePrivateDirectory, assertPrivateFile } from './private-storage.js';
 
 interface LockDatabase { exec(sql: string): void; close(): void }
 const require = createRequire(import.meta.url);
@@ -38,8 +39,11 @@ function installMarker(dataDir: string, path: string): void {
 
 /** A local-filesystem OS lock: never reclaimed by age, PID, or deleting its inode. */
 export function acquireServerLock(dataDir: string): () => void {
+  ensurePrivateDirectory(dataDir);
   const legacy = join(dataDir, 'server.lock');
   hasMarker(legacy); // Unknown/PID locks are never automatically reclaimed.
+  try { lstatSync(legacy); assertPrivateFile(legacy); }
+  catch(error) { if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error; }
 
   const path = join(dataDir, 'server-lock.sqlite');
   let database: LockDatabase | undefined;
@@ -50,6 +54,7 @@ export function acquireServerLock(dataDir: string): () => void {
       try {
         const stat = lstatSync(path + suffix);
         if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Invalid lock state.');
+        assertPrivateFile(path + suffix);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
