@@ -3,7 +3,14 @@ import os from 'os';
 
 // Use user's home directory for configuration files
 export const USER_HOME = os.homedir();
-const CONFIG_DIR = path.join(USER_HOME, '.claude-server-commander');
+const configuredDirectory = process.env.JRC_CONFIG_DIR;
+if (configuredDirectory !== undefined && !path.isAbsolute(configuredDirectory)) {
+  throw new Error('JRC_CONFIG_DIR must be an absolute directory');
+}
+if (process.env.JRC_SELF_HOSTED === '1' && !configuredDirectory) {
+  throw new Error('Self-hosted engine requires JRC_CONFIG_DIR');
+}
+export const CONFIG_DIR = configuredDirectory || path.join(USER_HOME, '.claude-server-commander');
 
 // Paths relative to the config directory
 export const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');

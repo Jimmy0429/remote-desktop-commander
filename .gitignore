@@ -61,3 +61,7 @@ test_search.js
 
 # Test reports: junit.xml, results.json, results.tap per runner (test/README.md)
 test-results/
+
+# Private self-host state, credentials, and local test artifacts
+.self-host/
+.superpowers/

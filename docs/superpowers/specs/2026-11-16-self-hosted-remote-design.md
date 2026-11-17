@@ -1,6 +1,6 @@
 # Jimmy's Remote Desktop Commander — first version
 
-Status: proposed design; upstream fork created. User requested a fork and their own remote version, and confirmed a private service for their own computers. Detailed design is pending review.
+Status: approved by the user on 2026-11-16: “Approve the design and build it.” Private service for their own computers; implementation is authorized.
 
 ## Intent
 

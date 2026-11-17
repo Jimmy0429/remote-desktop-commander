@@ -76,6 +76,7 @@ const TELEMETRY_PROXY_FALLBACK_URL = 'https://dc-telemetry-proxy-83847352264.eur
  * Set DESKTOP_COMMANDER_DISABLE_TELEMETRY to 1/true/yes/on to disable.
  */
 export function isTelemetryDisabledByEnv(): boolean {
+    if (process.env.JRC_SELF_HOSTED === '1') return true;
     const raw = process.env.DESKTOP_COMMANDER_DISABLE_TELEMETRY;
     if (!raw) return false;
     return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());

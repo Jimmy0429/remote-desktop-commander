@@ -41,6 +41,10 @@ class FeatureFlagManager {
    * Initialize - load from cache and start background refresh
    */
   async initialize(): Promise<void> {
+    if (process.env.JRC_SELF_HOSTED === '1') {
+      this.resolveFreshFetch?.();
+      return;
+    }
     try {
       // Load from cache immediately (non-blocking)
       await this.loadFromCache();
@@ -94,6 +98,7 @@ class FeatureFlagManager {
    * Manually refresh flags immediately (for testing)
    */
   async refresh(): Promise<boolean> {
+    if (process.env.JRC_SELF_HOSTED === '1') return false;
     try {
       await this.fetchFlags();
       return true;

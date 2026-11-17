@@ -1,0 +1,73 @@
+name: Self-hosted remote
+
+on:
+  push:
+    branches: [main, feat/self-hosted-remote]
+    paths:
+      - 'src/**'
+      - 'test/test-self-host-*.js'
+      - 'scripts/build-ui-runtime.cjs'
+      - 'scripts/run-self-host-tests.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'docs/self-hosted.md'
+      - 'deploy/self-host/**'
+      - '.dockerignore'
+      - '.github/workflows/self-host.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'test/test-self-host-*.js'
+      - 'scripts/build-ui-runtime.cjs'
+      - 'scripts/run-self-host-tests.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'docs/self-hosted.md'
+      - 'deploy/self-host/**'
+      - '.dockerignore'
+      - '.github/workflows/self-host.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-host:
+    name: Node 22 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Install the agent search binary
+        run: npm rebuild @vscode/ripgrep
+        env:
+          # The package installer uses GitHub release downloads. This read-only
+          # token avoids anonymous API limits on shared runners.
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Build
+        run: npm run build
+      - name: Verify the search binary
+        run: node dist/npm-scripts/verify-ripgrep.js
+      - name: Run the self-host suite
+        run: npm run test:self-host

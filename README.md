@@ -1,3 +1,13 @@
+# Jimmy Remote Commander
+
+This is Jimmy0429's MIT-licensed fork of DesktopCommanderMCP, adding an independently hosted private remote service.
+
+**Start here: [Private server and agent setup](docs/self-hosted.md).** The first version includes bearer-token MCP access, device enrollment and revocation, an outbound agent, and a web dashboard. OAuth browser login and live screen/mouse control are not included.
+
+Original project attribution and documentation follow. The upstream MIT license remains in [LICENSE](LICENSE).
+
+---
+
 # Desktop Commander MCP
 ### Search, update, manage files and run terminal commands with AI
 
