@@ -16,6 +16,12 @@ $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $script:reason='helper-runtime'
 try {
+  # MCP clients may omit the warmed module-analysis cache environment. Import
+  # trusted inbox manifests directly so command discovery cannot stall startup.
+  $PSModuleAutoLoadingPreference='None'
+  Import-Module ([IO.Path]::Combine($PSHOME,'Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1')) -Force -ErrorAction Stop
+  Import-Module ([IO.Path]::Combine($PSHOME,'Modules/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1')) -Force -ErrorAction Stop
+  Import-Module ([IO.Path]::Combine($PSHOME,'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1')) -Force -ErrorAction Stop
   $r=ConvertFrom-Json ([Console]::In.ReadToEnd())
   $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
   $trusted=@($user.Value,'S-1-5-18','S-1-5-32-544')
@@ -99,7 +105,7 @@ try {
     foreach($entry in $r.entries) {CheckAcl ([string]$entry)}
   } else {throw 'Invalid operation'}
   [Console]::Out.Write('{"ok":true}')
-} catch {[Console]::Out.Write((@{ok=$false;reason=$script:reason} | ConvertTo-Json -Compress));exit 1}
+} catch {[Console]::Out.Write('{"ok":false,"reason":"'+$script:reason+'"}');exit 1}
 `;
 
 function windowsAcl(action: 'directory'|'file'|'protect', path: string, entries?: string[]): void {
