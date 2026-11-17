@@ -94,3 +94,7 @@ Files: `src/self-host/cli.ts`, `src/self-host/dashboard.ts`, `docs/self-hosted.m
 - Ruling: retain the two demonstrated upstream telemetry/install failures as documented limitations rather than widening this fork implementation to unrelated legacy fixes.
 
 - Implementation pushed as `af74356e`; draft PR #1 opened in the user fork. Initial Node 22 CI passed macOS and exposed test-readiness and Windows command-quoting assumptions. Follow-up validation uses bounded readiness polling and Windows PowerShell; Docker runtime verification added on Linux.
+
+- User requested collaboration with installed Anthropic Fable 5.2. Verified `claude-fable-5-2`; three substantive review/discussion rounds produced reproduced lifecycle, socket, catalog, targeting, and output-limit fixes. Decision record: docs/self-host-review-decisions.md.
+- Final reviewed source `66388a0d`: 66 local tests pass; CI: Linux/macOS 66 passed, Windows 64 passed with 2 platform-specific skips; Docker named-volume initialization, competing-writer exclusion and SIGKILL recovery pass. Full upstream rerun after dependency upgrade: 275/277, with the same 2 baseline failures; subsequent isolated startup/transport checks: 2/2.
+- Delivery remains draft PR #1 in the user fork; public hosting, real-computer enrollment/client connection and inherited dependency follow-up are clearly outside the verified build.
