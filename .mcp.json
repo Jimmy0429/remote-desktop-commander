@@ -1,8 +1,15 @@
 {
   "mcpServers": {
-    "desktop-commander": {
-      "command": "npx",
-      "args": ["-y", "@wonderwhy-er/desktop-commander@latest"]
+    "jimmy-remote-commander": {
+      "command": "${JRC_NODE}",
+      "args": [
+        "${JRC_CLIENT_ROOT}/plugins/private/bridge.mjs"
+      ],
+      "env": {
+        "JRC_CLIENT_ROOT": "${JRC_CLIENT_ROOT}",
+        "JRC_SERVER_URL": "${JRC_SERVER_URL}",
+        "JRC_TOKEN_FILE": "${JRC_TOKEN_FILE}"
+      }
     }
   }
 }

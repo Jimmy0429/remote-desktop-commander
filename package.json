@@ -2,7 +2,7 @@
   "name": "@jimmy0429/remote-desktop-commander",
   "version": "0.3.3",
   "description": "Jimmy Remote Commander: private self-hosted remote MCP, forked from DesktopCommanderMCP",
-  "mcpName": "io.github.wonderwhy-er/desktop-commander",
+  "mcpName": "io.github.jimmy0429/remote-desktop-commander",
   "license": "MIT",
   "author": "Eduards Ruzga",
   "homepage": "https://github.com/Jimmy0429/remote-desktop-commander",

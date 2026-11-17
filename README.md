@@ -6,9 +6,12 @@ This is Jimmy0429's MIT-licensed fork of DesktopCommanderMCP, adding an independ
 
 For the Windows pilot, read the [next-day handoff](CONTINUE-TOMORROW.md), [verification record](docs/self-host-verification.md), and [capability comparison](docs/self-host-capabilities.md). Windows state uses native access controls, and desktop MCP clients can connect through the private stdio bridge.
 
-Original project attribution and documentation follow. The upstream MIT license remains in [LICENSE](LICENSE).
+Install the private client from the [client plugin guide](plugins/private/README.md) or build the [desktop extension](docs/self-hosted.md#desktop-extension). Both connect to the paired computers shown in your private dashboard.
 
----
+The installation links below belong to the original local Desktop Commander project. Its attribution and documentation follow. The upstream MIT license remains in [LICENSE](LICENSE).
+
+<details>
+<summary>Original Desktop Commander MCP documentation and local-engine installers</summary>
 
 # Desktop Commander MCP
 ### Search, update, manage files and run terminal commands with AI
@@ -1164,3 +1167,5 @@ For complete details, see our [Privacy Policy](PRIVACY.md).
 ## License
 
 MIT
+
+</details>

@@ -25,14 +25,29 @@ if (shouldBump) {
 const serverJson = JSON.parse(readFileSync('server.json', 'utf8'));
 serverJson.version = version;
 // Also update the package version in the packages array
-if (serverJson.packages && serverJson.packages.length > 0) {
-    serverJson.packages.forEach(pkg => {
-        if (pkg.registryType === 'npm' && pkg.identifier === '@wonderwhy-er/desktop-commander') {
-            pkg.version = version;
-        }
-    });
+for (const entry of serverJson.packages ?? []) {
+    if (entry.registryType === 'npm' && entry.identifier === pkg.name) {
+        entry.version = version;
+    }
 }
 writeFileSync('server.json', JSON.stringify(serverJson, null, 2) + '\n');
+
+// Installed plugin copies must request the same version as the client checkout.
+const pluginFiles = [
+    'plugin.json',
+    'gemini-extension.json',
+    'plugins/private/.claude-plugin/plugin.json',
+    'plugins/private/.cursor-plugin/plugin.json',
+    '.claude-plugin/marketplace.json',
+    '.cursor-plugin/marketplace.json',
+];
+for (const file of pluginFiles) {
+    if (!existsSync(file)) continue;
+    const descriptor = JSON.parse(readFileSync(file, 'utf8'));
+    const metadata = file.endsWith('/marketplace.json') ? descriptor.metadata : descriptor;
+    metadata.version = version;
+    writeFileSync(file, JSON.stringify(descriptor, null, 2) + '\n');
+}
 
 // Update version.ts
 const versionFileContent = `export const VERSION = '${version}';\n`;

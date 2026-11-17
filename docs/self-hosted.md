@@ -46,27 +46,35 @@ If an existing dedicated state directory has unsafe permissions, stop its proces
 node dist/self-host/cli.js protect --data-dir "$env:LOCALAPPDATA\JimmyRemoteCommander\server"
 ```
 
-`protect` is limited to existing directories containing recognizable application state. It refuses home/volume/repository roots, unrelated files, and reparse paths. It does not silently change workspace permissions. For a custom credential filename or unrelated contents, create a fresh dedicated directory and move only the required state after protecting it. Keep state on local storage, outside OneDrive/shared folders.
+`protect` is limited to existing directories containing recognizable application state. It refuses home/volume/repository roots, unrelated files, multiply linked files, and reparse paths. It does not silently change workspace permissions. For a custom credential filename or unrelated contents, create a fresh dedicated directory and move only the required state after protecting it. Keep state on local storage, outside OneDrive/shared folders.
 
-For a disposable same-computer pilot, initialize and start the server in one PowerShell window:
-
-```powershell
-node dist/self-host/cli.js init
-node dist/self-host/cli.js serve
-```
-
-In another window, create a test workspace and pair the local agent:
+For a disposable same-computer pilot, use a dedicated standard account or a Windows VM with test files. Run the following block from the built repository in PowerShell. It initializes fresh server state and serves it on loopback. To resume an existing pilot, start its server with `serve` using its original data directory.
 
 ```powershell
-$jrcWorkspace = Join-Path $env:USERPROFILE 'Documents\CommanderPilot'
-New-Item -ItemType Directory -Force -Path $jrcWorkspace | Out-Null
-node dist/self-host/cli.js pair --server http://127.0.0.1:8787 --token-file "$env:LOCALAPPDATA\JimmyRemoteCommander\server\owner-token"
-node dist/self-host/cli.js enroll --server http://127.0.0.1:8787
-Remove-Item -LiteralPath "$env:LOCALAPPDATA\JimmyRemoteCommander\pairing-code"
-node dist/self-host/cli.js agent --workspace $jrcWorkspace
+& {
+    $ErrorActionPreference = 'Stop'
+    node dist/self-host/cli.js init
+    if ($LASTEXITCODE -ne 0) { throw 'Server initialization failed.' }
+    node dist/self-host/cli.js serve
+}
 ```
 
-Loopback connects only this same computer. Use the configured HTTPS origin when the server is on a different machine. No startup task or Windows service is installed by these commands; keep both processes running. See [tomorrow's handoff](../CONTINUE-TOMORROW.md) before enrolling the owner's real computer.
+In a second PowerShell window at the same repository, run the full block. It creates a new workspace, requests a pairing from that server, and starts the agent with the identity returned by enrollment.
+
+```powershell
+& {
+    $ErrorActionPreference = 'Stop'
+    $jrcServer = 'http://127.0.0.1:8787'
+    $jrcWorkspace = Join-Path $env:LOCALAPPDATA ('CommanderPilot-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $jrcWorkspace | Out-Null
+    node dist/self-host/cli.js pair --server $jrcServer --token-file "$env:LOCALAPPDATA\JimmyRemoteCommander\server\owner-token"
+    if ($LASTEXITCODE -ne 0) { throw 'Pairing failed. Check the server and existing pairing file.' }
+    node dist/self-host/cli.js enroll --server $jrcServer --name "$env:COMPUTERNAME pilot" --start-agent --workspace $jrcWorkspace
+    if ($LASTEXITCODE -ne 0) { throw 'See the enrollment or agent diagnostic above.' }
+}
+```
+
+`enroll --start-agent` requires a fresh credential path. It publishes the complete credential, verifies the saved server and device identity against the enrollment response, removes the used pairing file, and launches that enrollment in the foreground. A failed enrollment leaves the pairing file and never starts an old agent. Record the printed device ID and compare it with the online device in the owner dashboard. Keep both windows open while testing. The [pilot handoff](../CONTINUE-TOMORROW.md) lists the file and terminal checks.
 
 ## Start locally
 
@@ -102,7 +110,7 @@ npm run self-host -- pair --server http://127.0.0.1:8787 --token-file .self-host
 
 Pairing codes expire after five minutes. Transfer that private file to the computer you intend to enroll through a channel you control. Alternatively, create a code with **Add device** in the dashboard and save it to a private file on the target computer. The dashboard shows the code only at creation and clears it when hidden, expired, or signed out. Hiding it does not revoke a still-valid code.
 
-On the target computer, build this repository and enroll:
+On a Unix target, build this repository and enroll with explicit local paths:
 
 ```sh
 npm run self-host -- enroll --server http://127.0.0.1:8787 --pairing-file .self-host/pairing-code --credentials .self-host/agent.json
@@ -110,23 +118,26 @@ npm run self-host -- enroll --server http://127.0.0.1:8787 --pairing-file .self-
 
 The loopback example assumes the agent and server run on the same machine. For another computer, use the server's configured HTTPS origin, such as `https://commander.example.com`. Enrollment is a deliberate local action and creates the device credential file. A pairing code cannot be used twice. Remove the pairing file after enrollment; keep the agent credential private.
 
-On the new Windows computer prepared above, use the LocalAppData defaults instead of the Unix `.self-host` paths:
+On the new Windows computer, use the LocalAppData defaults prepared above. Replace the example HTTPS origin with the exact address of your private server, then run this block from the built repository.
 
 ```powershell
-node dist/self-host/cli.js enroll --server https://commander.example.com
-if ($LASTEXITCODE -ne 0) { throw 'Enrollment failed; keep the pairing file and check the error.' }
-Remove-Item -LiteralPath (Join-Path $jrcAgentState 'pairing-code')
+& {
+    $ErrorActionPreference = 'Stop'
+    $jrcServer = 'https://commander.example.com'
+    $jrcWorkspace = Join-Path $env:LOCALAPPDATA ('CommanderPilot-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $jrcWorkspace | Out-Null
+    node dist/self-host/cli.js enroll --server $jrcServer --name "$env:COMPUTERNAME pilot" --start-agent --workspace $jrcWorkspace
+    if ($LASTEXITCODE -ne 0) { throw 'See the enrollment or agent diagnostic above.' }
+}
 ```
 
-Replace the example HTTPS origin with your configured server origin.
-
-Start the enrolled agent with absolute workspace and state-directory paths:
+For an already enrolled computer, use the server origin and device ID from the successful enrollment, as shown in the owner dashboard. Supply the original workspace and credential paths. The CLI verifies the requested identity against the saved credential before connecting.
 
 ```sh
-npm run self-host -- agent --credentials .self-host/agent.json --workspace /absolute/path/to/workspace --state-dir /absolute/path/to/private-agent-state
+npm run self-host -- agent --server https://commander.example.com --device-id DEVICE_ID --credentials .self-host/agent.json --workspace /absolute/path/to/workspace --state-dir /absolute/path/to/private-agent-state
 ```
 
-Use paths appropriate to the target OS. The workspace is the initial allowed directory for file tools. The state directory is dedicated to this fork's engine configuration, tool history, usage records, and logs. Use a separate state directory for each agent; do not point it at another Desktop Commander installation's settings.
+Use paths appropriate to the target OS. The workspace is the outer limit for private file tools. A valid local list of allowed directories can narrow it further. An empty, missing or malformed list in an existing configuration denies file access. If you deliberately move the workspace, use a fresh engine state directory or update the saved allowlist. Terminal commands still run with all permissions of the agent account. The state directory is dedicated to this fork's engine configuration, tool history, usage records, and logs. Use a separate state directory for each agent; do not point it at another Desktop Commander installation's settings.
 
 Keep the agent process running. It connects outward and does not open an incoming port on the computer. On interruption it closes its connection and local engine. Transient connection failures, including an unavailable server at startup, trigger retries with capped backoff. An access-policy HTTP 403 retries more slowly. Invalid credentials, revocation, protocol rejection, and replacement by another agent stop the agent with a clear diagnostic and a nonzero exit status. Run one agent per credential; starting another replaces the old instance without a reconnect fight. After a machine restart, start the agent again using the same credential and state paths.
 
@@ -139,6 +150,12 @@ npm run self-host -- revoke --server http://127.0.0.1:8787 --token-file .self-ho
 
 Revocation closes the current connection and prevents those credentials from reconnecting. To restore access, stop the old agent and deliberately enroll the computer again with a new pairing code. Enrollment never overwrites an existing credential file: choose a fresh `--credentials` path, or deliberately remove the old credential after confirming its revocation. Start the replacement agent with the matching credential path and its intended state directory.
 
+### Recover an interrupted enrollment
+
+If enrollment reports a lost response or interrupted credential write, the server may already have consumed the pairing code. In the owner dashboard, find the new registration by its printed device ID. When the reply never arrived, use the owner's `devices` command on that server to compare device names and creation times. Revoke an identified, unusable registration before issuing a fresh pairing. If you cannot distinguish it from other devices, resolve its identity before revoking anything.
+
+When a stopped enrollment leaves only a `<credentials>.pending` file, treat it as secret. Confirm that no enrollment process is active and resolve the server registration before removing that leftover or using a fresh credential path. If both names exist, the final credential may already be complete. Use the original server and confirmed device ID with `agent --server URL --device-id ID` to resume. A standalone `enroll` leaves the consumed pairing file for local cleanup after success.
+
 ## Connect an MCP client
 
 The endpoint is the server origin followed by `/mcp`:
@@ -150,6 +167,12 @@ Authorization: Bearer <owner token>
 ```
 
 Use a client that can configure an authorization header securely. Supply the token through that client's secret mechanism instead of committing it to a project file. This private release does not implement OAuth browser sign-in, public registration, or the vendor's hosted account system. ChatGPT/plugin sign-in is not established by running a local MCP test; a client that requires OAuth needs additional integration.
+
+### Desktop extension
+
+On the client computer, run `npm run build:mcpb` in the verified private checkout. Open the generated `jimmy-remote-commander-<version>.mcpb` in a desktop client with MCPB support. Select your private server origin and the absolute path to its protected client credential file. The extension bundles the private bridge and requires Node 22.13 or newer. The credential file stays outside the extension.
+
+After connecting, call `list_devices` and compare the device ID with the one printed during enrollment. For Claude Code, Cursor or Gemini CLI, see the [client plugin guide](../plugins/private/README.md).
 
 ### Desktop clients using stdio
 

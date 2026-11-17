@@ -1,6 +1,10 @@
 # Private remote service verification
 
-## November 17 Windows checkpoint
+## Pre-install verification
+
+The private plugin and desktop extension use the fork's stdio bridge. The qualification suite opens the packed desktop extension from a clean directory and compares the paired device ID, and exercises the cached plugin configuration against a disposable server. Workspace tests cover case-sensitive paths, live policy changes and engine restarts. Enrollment tests cover an existing credential, a competing enrollment, an interrupted reply and identity-checked startup. Check the latest [draft PR checks](https://github.com/Jimmy0429/remote-desktop-commander/pull/1/checks) for the tested commit and platform results. The physical Windows pilot and off-host HTTPS connection remain separate acceptance steps.
+
+## Previous November 17 Windows checkpoint
 
 Verified source checkpoint: `49c70fd6725d9a8c3d056312576fdf2a55911839` on `feat/self-hosted-remote`. [Native CI run 44042873133](https://github.com/Jimmy0429/remote-desktop-commander/actions/runs/44042873133) passed for this source. Later handoff-only commits do not change the tested application or tests. This is ready for a private Windows pilot; it is not installed on the owner's computer or qualified for public deployment.
 

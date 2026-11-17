@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,chmodSync,statSync,rmSync,symlinkSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,chmodSync,statSync,rmSync,symlinkSync,linkSync} from 'node:fs';
 import {join,dirname} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {fileURLToPath} from 'node:url';
@@ -224,4 +224,21 @@ test('Windows registry replacement files retain private DACLs', {skip:process.pl
     assert.ok(!windowsAcl(join(state,'registry.json')).rules.some(rule=>rule.allow&&['S-1-1-0','S-1-5-11','S-1-5-32-545'].includes(rule.sid)));
     assert.ok(DeviceRegistry.open(state).list()[0].revokedAt);
   } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('permission repair checks every link count before changing the state directory', () => {
+  const root = mkdtempSync(join(tmpdir(), 'jrc-private-links-'));
+  try {
+    const state = join(root, 'server');
+    mkdirSync(state);
+    writeFileSync(join(state, 'owner-token'), 'test fixture');
+    linkSync(join(state, 'owner-token'), join(state, 'agent.json'));
+    const before = privacySnapshot(state);
+    const result = run('protect', '--data-dir', state);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /single link/);
+    assert.deepEqual(privacySnapshot(state), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

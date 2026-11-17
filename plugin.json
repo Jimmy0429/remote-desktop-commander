@@ -1,26 +1,12 @@
 {
-  "name": "desktop-commander",
-  "description": "MCP server for terminal commands, process management, and file operations across text, code, PDF, DOCX, Excel, images, and structured data",
-  "version": "1.5.0",
+  "name": "jimmy-remote-commander",
+  "description": "Connect an AI client to your private server to work with files and terminal sessions on an explicitly selected computer.",
+  "version": "0.3.3",
   "author": {
-    "name": "Desktop Commander",
-    "email": "es@desktopcommander.app",
-    "url": "https://desktopcommander.app"
+    "name": "Jimmy0429"
   },
-  "homepage": "https://desktopcommander.app",
-  "repository": "https://github.com/wonderwhy-er/DesktopCommanderMCP",
+  "homepage": "https://github.com/Jimmy0429/remote-desktop-commander",
   "license": "MIT",
-  "keywords": [
-    "shell",
-    "terminal",
-    "filesystem",
-    "process",
-    "documents",
-    "pdf",
-    "spreadsheet",
-    "mcp",
-    "desktop-commander"
-  ],
-  "skills": "./skills/",
-  "mcpServers": ".mcp.json"
+  "skills": "./plugins/private/skills/",
+  "mcpServers": "./.mcp.json"
 }

@@ -7,6 +7,8 @@ import { FilteredStdioServerTransport } from './custom-stdio.js';
 import { server, flushDeferredMessages } from './server.js';
 import { commandManager } from './command-manager.js';
 import { configManager } from './config-manager.js';
+import { SELF_HOSTED_ENGINE, SELF_HOSTED_WORKSPACE } from './config.js';
+import path from 'node:path';
 import { featureFlagManager } from './utils/feature-flags.js';
 import { runSetup } from './npm-scripts/setup.js';
 import { runUninstall } from './npm-scripts/uninstall.js';
@@ -66,8 +68,10 @@ async function runServer() {
     try {
       deferLog('info', 'Loading configuration...');
       await configManager.loadConfig();
-      if (process.env.JRC_SELF_HOSTED === '1' && process.env.JRC_WORKSPACE) {
-        await configManager.setValue('allowedDirectories', [process.env.JRC_WORKSPACE]);
+      if (SELF_HOSTED_ENGINE) {
+        if (!SELF_HOSTED_WORKSPACE || !path.isAbsolute(SELF_HOSTED_WORKSPACE)) {
+          throw new Error('Self-hosted engine requires an absolute workspace.');
+        }
         await configManager.setValue('telemetryEnabled', false);
       }
       deferLog('info', 'Configuration loaded successfully');

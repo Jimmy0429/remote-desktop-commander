@@ -4,10 +4,14 @@ import os from 'os';
 // Use user's home directory for configuration files
 export const USER_HOME = os.homedir();
 const configuredDirectory = process.env.JRC_CONFIG_DIR;
+export const SELF_HOSTED_ENGINE = process.env.JRC_SELF_HOSTED === '1';
+// LocalEngine resolves the chosen workspace before starting its child. Keep
+// that launch-time value independent of configuration edits and reloads.
+export const SELF_HOSTED_WORKSPACE = SELF_HOSTED_ENGINE ? process.env.JRC_WORKSPACE : undefined;
 if (configuredDirectory !== undefined && !path.isAbsolute(configuredDirectory)) {
   throw new Error('JRC_CONFIG_DIR must be an absolute directory');
 }
-if (process.env.JRC_SELF_HOSTED === '1' && !configuredDirectory) {
+if (SELF_HOSTED_ENGINE && !configuredDirectory) {
   throw new Error('Self-hosted engine requires JRC_CONFIG_DIR');
 }
 export const CONFIG_DIR = configuredDirectory || path.join(USER_HOME, '.claude-server-commander');

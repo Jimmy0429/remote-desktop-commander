@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import { addToolCallPaths, capture } from '../utils/capture.js';
 import { withTimeout, runWithAbortableTimeout } from '../utils/withTimeout.js';
 import { configManager } from '../config-manager.js';
+import { SELF_HOSTED_ENGINE, SELF_HOSTED_WORKSPACE } from '../config.js';
 import { getFileHandler, TextFileHandler, isImageAnswer } from '../utils/files/index.js';
 import type { ReadOptions, FileResult, FileInfo, PdfPageItem } from '../utils/files/base.js';
 import { isPdfFile } from "./mime-types.js";
@@ -113,6 +114,12 @@ async function getAllowedDirs(): Promise<string[]> {
     try {
         let allowedDirectories;
         const config = await configManager.getConfig();
+        if (SELF_HOSTED_ENGINE) {
+            const dirs = config.allowedDirectories;
+            if (!Array.isArray(dirs) || !dirs.every(dir =>
+                typeof dir === 'string' && path.isAbsolute(expandHome(dir)))) return [];
+            return dirs;
+        }
         if (config.allowedDirectories && Array.isArray(config.allowedDirectories)) {
             allowedDirectories = config.allowedDirectories;
         } else {
@@ -287,9 +294,20 @@ function isWithinAllowedDir(normalizedPathToCheck: string, allowedDir: string): 
  * @param pathToCheck Path to check
  * @returns boolean True if path is allowed
  */
-async function isPathAllowed(pathToCheck: string): Promise<boolean> {
+async function isPathAllowed(pathToCheck: string, allowedDirectories: string[]): Promise<boolean> {
+    if (SELF_HOSTED_ENGINE) {
+        if (!SELF_HOSTED_WORKSPACE || !allowedDirectories.length ||
+            !await isInPrivateDirectory(pathToCheck, SELF_HOSTED_WORKSPACE)) return false;
+        // Each local allowance is intersected with the immutable workspace.
+        // Resolve its own path as well, including any configured junctions.
+        for (const directory of allowedDirectories) {
+            if (directory === SELF_HOSTED_WORKSPACE) return true;
+            const realDirectory = await getAllowedDirRealPath(directory);
+            if (realDirectory && await isInPrivateDirectory(pathToCheck, realDirectory)) return true;
+        }
+        return false;
+    }
     // If root directory is allowed, all paths are allowed
-    const allowedDirectories = await getAllowedDirs();
     if (allowedDirectories.includes('/') || allowedDirectories.length === 0) {
         return true;
     }
@@ -320,6 +338,24 @@ async function isPathAllowed(pathToCheck: string): Promise<boolean> {
             });
         }
     });
+}
+
+/** Both paths are already resolved. A spelling differing only by case is
+ * accepted only if both directory names refer to the same filesystem object.
+ * Case sensitivity can vary between directories on the same Windows volume. */
+async function isInPrivateDirectory(target: string, directory: string): Promise<boolean> {
+    const root = path.resolve(directory);
+    const prefix = target.slice(0, root.length);
+    if (target.length > root.length && !root.endsWith(path.sep) && target[root.length] !== path.sep) return false;
+    if (prefix === root) return true;
+    if (prefix.toLowerCase() !== root.toLowerCase()) return false;
+    try {
+        const [left, right] = await Promise.all([prefix, root].map(name => fs.lstat(name, { bigint: true })));
+        return left.isDirectory() && right.isDirectory() && left.ino !== 0n &&
+            left.ino === right.ino && left.dev === right.dev;
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -371,13 +407,17 @@ export async function validatePath(requestedPath: string, { entry = false }: { e
         addToolCallPaths(pathForNextCheck);
 
         // Check if path is allowed
-        if (!(await isPathAllowed(pathForNextCheck))) {
+        const allowedDirectories = await getAllowedDirs();
+        if (!(await isPathAllowed(pathForNextCheck, allowedDirectories))) {
             capture('server_path_validation_error', {
                 error: 'Path not allowed',
-                allowedDirsCount: (await getAllowedDirs()).length
+                allowedDirsCount: allowedDirectories.length
             });
 
-            throw new Error(`Path not allowed: ${requestedPath}. Must be within one of these directories: ${(await getAllowedDirs()).join(', ')}`);
+            if (SELF_HOSTED_ENGINE) {
+                throw new Error(`Path not allowed: ${requestedPath}. File tools require the selected workspace and a matching configured directory.`);
+            }
+            throw new Error(`Path not allowed: ${requestedPath}. Must be within one of these directories: ${allowedDirectories.join(', ')}`);
         }
 
         // SECURITY: Always return the resolved path (with symlinks resolved) so that

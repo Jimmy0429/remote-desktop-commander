@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
@@ -150,6 +150,15 @@ export function assertPrivateFile(file: string): void {
   if((info.mode&0o077) || (process.getuid && info.uid!==process.getuid())) throw unavailable();
 }
 
+export function readPrivateTextFile(file: string): string {
+  const info = lstatSync(file);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024) {
+    throw new Error('Credential file must be a small regular file.');
+  }
+  assertPrivateFile(file);
+  return readFileSync(file, 'utf8').trim();
+}
+
 export function writePrivateFile(file: string, content: string, exclusive=true): void {
   const path=resolve(file);ensurePrivateDirectory(dirname(path));
   if(!exclusive) assertPrivateFile(path);
@@ -178,6 +187,9 @@ export function protectPrivateDirectory(directory: string): void {
     if(entries.length>=4096) throw new Error('Too many state entries to protect safely.');
     const currentInfo=lstatSync(current);
     if(currentInfo.isSymbolicLink() || (!currentInfo.isDirectory()&&!currentInfo.isFile())) throw unavailable();
+    if (currentInfo.isFile() && currentInfo.nlink !== 1) {
+      throw new Error('Protect requires files with a single link. Use fresh private state.');
+    }
     entries.push(current);
     if(currentInfo.isDirectory()) for(const name of readdirSync(current)) {
       const child=join(current,name);const childInfo=lstatSync(child);

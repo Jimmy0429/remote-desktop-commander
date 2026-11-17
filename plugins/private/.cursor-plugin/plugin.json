@@ -1,0 +1,26 @@
+{
+  "name": "jimmy-remote-commander",
+  "description": "Connect an AI client to your private server to work with files and terminal sessions on an explicitly selected computer.",
+  "version": "0.3.3",
+  "author": {
+    "name": "Jimmy0429"
+  },
+  "homepage": "https://github.com/Jimmy0429/remote-desktop-commander",
+  "license": "MIT",
+  "displayName": "Jimmy Remote Commander",
+  "category": "developer-tools",
+  "mcpServers": {
+    "jimmy-remote-commander": {
+      "type": "stdio",
+      "command": "${env:JRC_NODE}",
+      "args": [
+        "${CURSOR_PLUGIN_ROOT}/bridge.mjs"
+      ],
+      "env": {
+        "JRC_CLIENT_ROOT": "${env:JRC_CLIENT_ROOT}",
+        "JRC_SERVER_URL": "${env:JRC_SERVER_URL}",
+        "JRC_TOKEN_FILE": "${env:JRC_TOKEN_FILE}"
+      }
+    }
+  }
+}

@@ -1,12 +1,35 @@
 {
-  "name": "desktop-commander",
-  "version": "1.5.0",
-  "description": "MCP server for terminal commands, process management, and file operations across text, code, PDF, DOCX, Excel, images, and structured data",
+  "name": "jimmy-remote-commander",
+  "version": "0.3.3",
+  "description": "Connect an AI client to your private server to work with files and terminal sessions on an explicitly selected computer.",
   "mcpServers": {
-    "desktop-commander": {
-      "command": "npx",
-      "args": ["-y", "@wonderwhy-er/desktop-commander"]
+    "jimmy-remote-commander": {
+      "command": "node",
+      "args": [
+        "${extensionPath}/plugins/private/bridge.mjs"
+      ],
+      "env": {
+        "JRC_CLIENT_ROOT": "${JRC_CLIENT_ROOT}",
+        "JRC_SERVER_URL": "${JRC_SERVER_URL}",
+        "JRC_TOKEN_FILE": "${JRC_TOKEN_FILE}"
+      }
     }
   },
-  "excludeTools": []
+  "settings": [
+    {
+      "name": "Built checkout",
+      "description": "Absolute directory of the built Jimmy Remote Commander fork.",
+      "envVar": "JRC_CLIENT_ROOT"
+    },
+    {
+      "name": "Private server",
+      "description": "Private server origin, such as https://commander.example.com.",
+      "envVar": "JRC_SERVER_URL"
+    },
+    {
+      "name": "Credential file",
+      "description": "Absolute path to the private credential file. Enter the path only.",
+      "envVar": "JRC_TOKEN_FILE"
+    }
+  ]
 }

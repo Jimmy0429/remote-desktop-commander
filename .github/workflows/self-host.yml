@@ -7,6 +7,21 @@ on:
       - 'src/**'
       - 'test/test-self-host-*.js'
       - 'scripts/build-ui-runtime.cjs'
+      - 'scripts/build-mcpb.cjs'
+      - 'scripts/sync-version.js'
+      - 'test/test-root-mcpb-manifest.js'
+      - 'test/test-package-ships-local-deps.js'
+      - 'test/test-release-alpha-promotion.js'
+      - 'setup-claude-server.js'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'manifest*.json'
+      - 'plugins/private/**'
+      - '.claude-plugin/**'
+      - '.cursor-plugin/**'
+      - '.mcp.json'
+      - 'plugin.json'
+      - 'gemini-extension.json'
       - 'scripts/run-self-host-tests.mjs'
       - 'package.json'
       - 'package-lock.json'
@@ -20,6 +35,21 @@ on:
       - 'src/**'
       - 'test/test-self-host-*.js'
       - 'scripts/build-ui-runtime.cjs'
+      - 'scripts/build-mcpb.cjs'
+      - 'scripts/sync-version.js'
+      - 'test/test-root-mcpb-manifest.js'
+      - 'test/test-package-ships-local-deps.js'
+      - 'test/test-release-alpha-promotion.js'
+      - 'setup-claude-server.js'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'manifest*.json'
+      - 'plugins/private/**'
+      - '.claude-plugin/**'
+      - '.cursor-plugin/**'
+      - '.mcp.json'
+      - 'plugin.json'
+      - 'gemini-extension.json'
       - 'scripts/run-self-host-tests.mjs'
       - 'package.json'
       - 'package-lock.json'
@@ -69,6 +99,8 @@ jobs:
         run: npm run build
       - name: Verify the search binary
         run: node dist/npm-scripts/verify-ripgrep.js
+      - name: Verify private plugin and package metadata
+        run: node --test test/test-root-mcpb-manifest.js test/test-package-ships-local-deps.js test/test-release-alpha-promotion.js
       - name: Run the self-host suite
         run: npm run test:self-host
 
