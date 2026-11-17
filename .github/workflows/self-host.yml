@@ -115,6 +115,7 @@ jobs:
           cat > "$smoke_script" <<'NODE'
           import { readFileSync, writeFileSync, statSync } from 'node:fs';
           import { setTimeout as delay } from 'node:timers/promises';
+          import { request as httpRequest } from 'node:http';
           function check(condition, message) { if (!condition) throw new Error(message); }
           check(process.getuid() !== 0, 'Server image must run as a non-root user.');
           check((statSync('/data/owner-token').mode & 0o777) === 0o600, 'Owner token permissions must be 600.');
@@ -122,15 +123,37 @@ jobs:
           const base = 'http://127.0.0.1:8787';
           const host = 'commander.test';
           async function request(path, { owner = false, body, requestHost = host } = {}) {
-            return fetch(base + path, {
-              method: body === undefined ? 'GET' : 'POST',
-              headers: {
-                Host: requestHost,
-                ...(owner ? { Authorization: 'Bearer ' + ownerToken } : {}),
-                ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-              },
-              body: body === undefined ? undefined : JSON.stringify(body),
-              redirect: 'error', signal: AbortSignal.timeout(1000),
+            const encoded = body === undefined ? undefined : JSON.stringify(body);
+            // fetch may replace Host on newer Node versions. This probe must send
+            // the configured public Host while connecting through container loopback.
+            return new Promise((resolve, reject) => {
+              const req = httpRequest(base + path, {
+                method: encoded === undefined ? 'GET' : 'POST',
+                headers: {
+                  Host: requestHost,
+                  ...(owner ? { Authorization: 'Bearer ' + ownerToken } : {}),
+                  ...(encoded === undefined ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(encoded) }),
+                },
+                signal: AbortSignal.timeout(1000),
+              }, response => {
+                const chunks = [];
+                let bytes = 0;
+                response.on('data', chunk => {
+                  bytes += chunk.length;
+                  if (bytes > 1024 * 1024) { req.destroy(new Error('Smoke response exceeded its size limit.')); return; }
+                  chunks.push(chunk);
+                });
+                response.once('error', reject);
+                response.once('end', () => resolve({
+                  status: response.statusCode,
+                  json: async () => {
+                    try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+                    catch { throw new Error('Smoke response was not valid JSON.'); }
+                  },
+                }));
+              });
+              req.once('error', reject);
+              req.end(encoded);
             });
           }
           let ready = false;

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 // Config tools schemas
 export const GetConfigArgsSchema = z.object({

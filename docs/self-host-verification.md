@@ -24,6 +24,12 @@ Verified locally on 2026-11-17 on macOS with Node 26.7.0 and npm 11.19.0. Upstre
 
 These failures were not hidden or removed from the suite. They concern legacy telemetry/install paths; the new self-host path disables vendor telemetry and the documented installation skips the upstream project lifecycle script. The full compatibility suite is therefore **not entirely green**.
 
+## Dependency review
+
+The network validation path now uses Zod 4.6.7, and the MCP HTTP adapter uses `@hono/node-server` 2.1.8. All 29 legacy tool schemas still convert to JSON Schema through the package's explicit `zod/v3` compatibility API. Build, document checks, and actual MCP/agent tests passed after this change.
+
+The post-update runtime dependency audit still reports **13 affected packages: 7 high and 6 moderate**. Its remaining Zod finding is the nested 3.x copy used by Chromium BiDi. The legacy `zod/v3` compatibility API also still accumulates validation errors for oversized invalid collections; upgrading the package does not harden that API. Other findings concern inherited preview, document/browser, or legacy enrollment dependencies. This is not a clean-audit release, and these paths need further review before public deployment. Audit snapshots are retained locally under `.self-host/verification/`.
+
 ## Remaining verification boundaries
 
 - A three-platform Node 22 GitHub Actions workflow is supplied. Its actual run results are recorded separately; local macOS tests alone do not establish Windows/Linux support.

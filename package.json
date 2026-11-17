@@ -132,7 +132,7 @@
     "unbash": "6.0.1",
     "unified": "^11.0.5",
     "unpdf": "~1.8.1",
-    "zod": "^3.24.1",
+    "zod": "^4.6.7",
     "zod-to-json-schema": "^3.23.5",
     "ws": "^8.18.3"
   },
@@ -159,6 +159,7 @@
     "typescript": "^5.3.3"
   },
   "overrides": {
+    "@hono/node-server": "^2.1.6",
     "md-to-pdf": {
       "chokidar": "^4.0.3"
     },

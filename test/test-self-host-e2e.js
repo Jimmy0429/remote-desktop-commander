@@ -20,7 +20,7 @@ test('CLI enrollment and real MCP file/process operations traverse server, agent
   const pairingFile = join(root, 'pairing'); const credentialFile = join(root, 'agent.json');
   const cli = fileURLToPath(new URL('../dist/self-host/cli.js', import.meta.url));
   const run = (...args) => promisify(execFile)(process.execPath, [cli, ...args]);
-  const server = await createControlServer({ dataDir: join(root, 'server'), ownerToken, port: 0, waitMs: 10 });
+  const server = await createControlServer({ dataDir: join(root, 'server'), ownerToken, port: 0, waitMs: 1 });
   let agent; let client;
   try {
     const paired = await run('pair', '--server', server.url, '--token-file', ownerFile, '--pairing-file', pairingFile);
@@ -38,15 +38,28 @@ test('CLI enrollment and real MCP file/process operations traverse server, agent
       if (devices.some(d => d.id === credential.deviceId && d.online)) break;
       await new Promise(r => setTimeout(r, 20));
     }
+    const polledTools=new Set();
     async function call(name, args) {
       let result = await client.callTool({ name, arguments: { deviceId: credential.deviceId, ...args } });
       const id = result.structuredContent?.callId;
       if (id) {
-        for (let n = 0; n < 100; n++) {
-          result = await client.callTool({ name: 'get_remote_call', arguments: { callId: id } });
-          if (result.structuredContent?.status !== 'running') { result = result.structuredContent.result || result; break; }
-          await new Promise(r => setTimeout(r, 50));
+        polledTools.add(name);
+        const deadline=Date.now()+30000;
+        while(result.structuredContent?.status==='running') {
+          const remaining=deadline-Date.now();
+          assert.ok(remaining>0,`${name} call ${id} did not complete before the polling deadline; operation was not resubmitted`);
+          result = await client.callTool(
+            {name:'get_remote_call',arguments:{callId:id}},
+            undefined,
+            {timeout:Math.min(5000,remaining)},
+          );
+          assert.notEqual(result.isError,true,JSON.stringify(result));
+          assert.equal(result.structuredContent?.callId,id,'poll must refer to the submitted operation');
+          if(result.structuredContent.status==='running') await new Promise(r=>setTimeout(r,150));
         }
+        assert.equal(result.structuredContent?.status,'completed',JSON.stringify(result));
+        assert.ok(result.structuredContent.result,`${name} completed without its tool result`);
+        result=result.structuredContent.result;
       }
       assert.notEqual(result.isError, true, JSON.stringify(result));
       return result;
@@ -69,12 +82,14 @@ test('CLI enrollment and real MCP file/process operations traverse server, agent
     assert.match(JSON.stringify(page.content), /round-trip\.txt/);
     assert.match(JSON.stringify(page.content), /JRC file round trip/);
     const terminalFixture=join(workspace,'terminal fixture.cjs');
-    await call('write_file',{path:terminalFixture,content:"process.stdout.write('JRC_TERMINAL_OK')"});
+    // Exceed the old five-second polling window so the asynchronous call path is always exercised.
+    await call('write_file',{path:terminalFixture,content:"setTimeout(()=>process.stdout.write('JRC_TERMINAL_OK'),9000)"});
     const quote=process.platform==='win32'
       ? value=>`'${value.replaceAll("'", "''")}'`
       : value=>`'${value.replaceAll("'", "'\\''")}'`;
     const command=`${process.platform==='win32'?'& ':''}${quote(process.execPath)} ${quote(terminalFixture)}`;
-    const processResult = await call('start_process', { command, timeout_ms: 1000, ...(process.platform === 'win32' ? { shell: 'powershell.exe' } : {}) });
+    const processResult = await call('start_process', { command, timeout_ms: 12000, ...(process.platform === 'win32' ? { shell: 'powershell.exe' } : {}) });
+    assert.ok(polledTools.has('start_process'),'the slow terminal operation must exercise asynchronous relay result polling');
     const sessionMatch=/Process started with PID (\d+)/.exec(JSON.stringify(processResult.content));
     assert.ok(sessionMatch,JSON.stringify(processResult));
     let processOutput=JSON.stringify(processResult.content);
