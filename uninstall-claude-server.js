@@ -1,3 +1,6 @@
+#!/usr/bin/env node
+import manifest from '#commander-package' with { type: 'json' };
+
 import { homedir, platform } from 'os';
 import fs from 'fs/promises';
 import path from 'path';
@@ -9,6 +12,12 @@ import { exec } from "node:child_process";
 import { version as nodeVersion } from 'process';
 import * as https from 'https';
 import { randomUUID } from 'crypto';
+
+// Only the original package owns its public installation and Claude settings.
+if (manifest.name !== '@wonderwhy-er/desktop-commander') {
+    console.error('Jimmy Remote Commander uses the private plugin and agent. See plugins/private/README.md and docs/self-hosted.md in your checkout.');
+    process.exit(1);
+}
 
 // Telemetry proxy configuration
 const TELEMETRY_PROXY_URL = 'https://telemetry.desktopcommander.app/mp/collect';

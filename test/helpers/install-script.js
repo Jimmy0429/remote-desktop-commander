@@ -48,7 +48,7 @@ const PRELOAD = [
  */
 export async function runInstallScript(script, {
   args = [], env = {}, platform, telemetry = {}, commands = { 'npm --version': { stdout: '10.9.0' } }, fs: fsPlan,
-  prepare, timeScale = 100, timeoutMs = 60000,
+  prepare, timeScale = 100, timeoutMs = 60000, privateInstaller = false,
 } = {}) {
   const testEnv = createTestEnv();
   const logDir = createTempDir('dc-install-stand-ins-');
@@ -58,7 +58,7 @@ export async function runInstallScript(script, {
   const hadSetupLog = fs.existsSync(setupLog);
   try {
     await prepare?.(testEnv.home);
-    const standIns = JSON.stringify({ log, telemetry, commands, fs: fsPlan, platform, timeScale });
+    const standIns = JSON.stringify({ log, telemetry, commands, fs: fsPlan, platform, timeScale, privateInstaller });
     const preload = `data:text/javascript,${encodeURIComponent(PRELOAD)}`;
     const argv = [...hookArgs(HOOKS_URL), '--import', preload, path.join(ROOT, script), ...args];
     const appData = path.join(testEnv.home, 'AppData', 'Roaming');

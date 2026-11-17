@@ -23,6 +23,14 @@ The server is single-process. Run only one server against a data directory. Its 
 
 ## Build from source
 
+For a new Windows pilot checkout, clone the private feature branch. Compare the printed commit with the passing commit in the [pilot checks](https://github.com/Jimmy0429/remote-desktop-commander/pull/1/checks). If you already have the checked-out fork, run `git rev-parse HEAD` in it.
+
+```sh
+git clone --branch feat/self-hosted-remote --single-branch https://github.com/Jimmy0429/remote-desktop-commander.git
+cd remote-desktop-commander
+git rev-parse HEAD
+```
+
 Use Node.js **22.13 or newer** and run these commands from the repository root:
 
 ```sh

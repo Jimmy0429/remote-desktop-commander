@@ -2,7 +2,7 @@
 
 ## Pre-install verification
 
-The private plugin and desktop extension use the fork's stdio bridge. The qualification suite opens the packed desktop extension from a clean directory and compares the paired device ID, and exercises the cached plugin configuration against a disposable server. Workspace tests cover case-sensitive paths, live policy changes and engine restarts. Enrollment tests cover an existing credential, a competing enrollment, an interrupted reply and identity-checked startup. Check the latest [draft PR checks](https://github.com/Jimmy0429/remote-desktop-commander/pull/1/checks) for the tested commit and platform results. The physical Windows pilot and off-host HTTPS connection remain separate acceptance steps.
+The private plugin and desktop extension use the fork's stdio bridge. The qualification suite opens the packed desktop extension from a clean directory and reads a uniquely marked file from its enrolled agent. It also exercises the cached plugin configuration against a disposable server. Workspace tests cover case-sensitive paths, live policy changes and engine restarts. Enrollment tests cover an existing credential, a competing enrollment, an interrupted reply and identity-checked startup. Check the latest [draft PR checks](https://github.com/Jimmy0429/remote-desktop-commander/pull/1/checks) for the tested commit and platform results. The physical Windows pilot and off-host HTTPS connection remain separate acceptance steps.
 
 ## Previous November 17 Windows checkpoint
 
