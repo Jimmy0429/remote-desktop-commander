@@ -103,8 +103,12 @@ async function connectBridge(t, f, serverUrl, { allowFailure = false, useCli = f
 }
 
 async function settledCall(t, client, name, args) {
-  let result = await bridgePhase(t, `${name} initial tools/call`, () =>
+  const result = await bridgePhase(t, `${name} initial tools/call`, () =>
     client.callTool({ name, arguments: args }, undefined, { timeout: 10000 }));
+  return settledResult(t, client, name, result);
+}
+
+async function settledResult(t, client, name, result) {
   const callId = result.structuredContent?.callId;
   if (callId) {
     await bridgePhase(t, `${name} retained-result polling`, async () => {
@@ -206,9 +210,26 @@ test('stdio bridge preserves tools and async results through a real server and a
   assert.equal(burst.filter(result => result.status === 'fulfilled').length, 8);
   assert.equal(forwardedCalls - beforeBurst, 8);
   assert.match(String(burst.find(result => result.status === 'rejected').reason), /Too many active requests.*not forwarded/i);
+  // An HTTP response may only acknowledge a retained call. Drain these reads
+  // before the next scenario without submitting any of them a second time.
+  await Promise.all(burst.filter(result => result.status === 'fulfilled').map(async ({ value }) => {
+    const completed = await settledResult(t, bridge.client, 'burst read_file', value);
+    assert.match(JSON.stringify(completed.result), /BRIDGE_FILE_MARKER/);
+  }));
   dropNextAppend = true;
   await assert.rejects(bridge.client.callTool({ name: 'write_file', arguments: args({ path: file, content: 'ONCE_ONLY\n', mode: 'append' }) }, undefined, { timeout: 5000 }), /may have executed.*inspect.*retry/i);
-  await delay(300);
+  // The dropped response can be a running acknowledgement. Inspect the local
+  // file until execution becomes visible; never resubmit the uncertain write.
+  await step('lost append completion inspection', async () => {
+    const deadline = Date.now() + 15000;
+    const expected = 'BRIDGE_FILE_MARKER\nONCE_ONLY\n';
+    let content = await readFile(file, 'utf8');
+    while (content !== expected && Date.now() < deadline) {
+      await delay(25);
+      content = await readFile(file, 'utf8');
+    }
+    assert.equal(content, expected, 'The single dispatched append must complete within its deadline.');
+  });
   assert.equal(appendDispatches, 1);
   assert.equal(await readFile(file, 'utf8'), 'BRIDGE_FILE_MARKER\nONCE_ONLY\n');
   assert.ok(!bridge.stderr().includes(f.ownerToken));
