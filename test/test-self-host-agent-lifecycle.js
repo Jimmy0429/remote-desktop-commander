@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {once} from 'node:events';
 import {createServer} from 'node:net';
+import {createServer as createHttpServer} from 'node:http';
 import {mkdtemp,mkdir,realpath,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -36,21 +37,50 @@ async function closeServer(server) {
   await new Promise(resolve=>server.close(resolve));
 }
 
-test('initial network failure retries until the server becomes available', {timeout:20000}, async()=>{
-  const f=await fixture(); const port=await unusedPort(); const controller=new AbortController();
-  let server; let agent; let settled=false; const statuses=[];
-  const started=startAgent({...f,serverUrl:`http://127.0.0.1:${port}`,deviceToken:'initial-retry-token',signal:controller.signal,
-    onStatus:status=>statuses.push(status)}).then(value=>{settled=true;return {agent:value};},error=>{settled=true;return {error};});
+test('initial network failure retries until the server becomes available', {timeout:60000}, async t => {
+  const f = await fixture();
+  const controller = new AbortController();
+  // Keep this port reserved throughout. Reset the first real handshake and
+  // enable the same endpoint only after the agent reports its first retry.
+  const listener = createHttpServer();
+  const server = new WebSocketServer({ noServer: true });
+  let available = false;
+  let attempts = 0;
+  listener.on('upgrade', (request, socket, head) => {
+    attempts++;
+    if (!available) { socket.destroy(); return; }
+    server.handleUpgrade(request, socket, head, ws => server.emit('connection', ws, request));
+  });
+  listener.listen(0, '127.0.0.1');
+  await once(listener, 'listening');
+  const firstAttempt = once(listener, 'upgrade');
+  const statuses = [];
+  const beginning = performance.now();
+  const started = startAgent({ ...f, serverUrl: 'http://127.0.0.1:' + listener.address().port,
+    deviceToken: 'initial-retry-token', signal: controller.signal, onStatus: status => statuses.push(status) })
+    .then(agent => ({ agent }), error => ({ error }));
   try {
-    await waitFor(()=>settled || statuses.some(status=>status.state==='retrying'));
-    assert.equal(settled,false,'a transient first connection failure must not terminate the agent');
-    assert.ok(statuses.some(status=>status.state==='retrying'),'retry state should be observable');
-    server=new WebSocketServer({host:'127.0.0.1',port}); await once(server,'listening');
-    const result=await bounded(started); assert.ok(result.agent,result.error?.message); agent=result.agent;
-    assert.ok(statuses.some(status=>status.state==='connected'));
+    // A cold Windows engine verifies native ACLs and starts MCP before it
+    // attempts any network connection. Measure retry time from the reset.
+    await bounded(Promise.race([firstAttempt, started.then(() => {
+      throw new Error('Agent settled before its first handshake');
+    })]), 30000);
+    const first = performance.now();
+    t.diagnostic('Engine startup to first handshake: ' + Math.round(first - beginning) + ' ms');
+    await waitFor(() => statuses.some(status => status.state === 'retrying'));
+    available = true;
+    const result = await bounded(started);
+    assert.ok(result.agent, result.error?.message);
+    assert.ok(attempts >= 2);
+    assert.ok(statuses.some(status => status.state === 'connected'));
+    t.diagnostic('Reset to successful reconnection: ' + Math.round(performance.now() - first) + ' ms');
   } finally {
-    controller.abort(); const result=await started; await (agent||result.agent)?.close();
-    await closeServer(server); await rm(f.base,{recursive:true,force:true});
+    controller.abort();
+    const result = await started;
+    await result.agent?.close();
+    await closeServer(server);
+    await new Promise(resolve => listener.close(resolve));
+    await rm(f.base, {recursive:true,force:true});
   }
 });
 
