@@ -147,6 +147,7 @@ Stop with `docker compose -f deploy/self-host/compose.yaml down`. Do not add `--
 - The server audit contains device IDs, tool names, timestamps, durations, and outcomes. It excludes command arguments, file contents, credentials, and result bodies. The upstream engine's local tool history may contain arguments and outputs: treat the agent state directory as private.
 - Device tokens are stored as hashes on the control server; the agent stores the credential it needs to reconnect. Keep both agent credentials and the owner's token out of Git and shared logs.
 - This is a single-owner, single-server-process release. Do not share its data directory between replicas. OAuth, multi-owner accounts, unattended agent installers, screen control, and a production hosting SLA are outside this release.
+- On Windows, use PowerShell for terminal operations. The upstream `cmd.exe` adapter has a quoting edge when a command starts with a quoted executable and contains additional quoted arguments; that shell combination is not qualified by this release.
 - Platform support follows the engine's Windows/macOS/Linux design; claim platform qualification only for environments actually tested. Public DNS/TLS, hosting, and a real AI client remain deployment checks until exercised.
 
 ## Attribution

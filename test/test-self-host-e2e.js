@@ -68,9 +68,22 @@ test('CLI enrollment and real MCP file/process operations traverse server, agent
     }
     assert.match(JSON.stringify(page.content), /round-trip\.txt/);
     assert.match(JSON.stringify(page.content), /JRC file round trip/);
-    const command = `"${process.execPath}" -e "process.stdout.write('JRC_TERMINAL_OK')"`;
-    const processResult = await call('start_process', { command, timeout_ms: 1000, ...(process.platform === 'win32' ? { shell: 'cmd.exe' } : {}) });
-    assert.match(JSON.stringify(processResult.content), /JRC_TERMINAL_OK/);
+    const terminalFixture=join(workspace,'terminal fixture.cjs');
+    await call('write_file',{path:terminalFixture,content:"process.stdout.write('JRC_TERMINAL_OK')"});
+    const quote=process.platform==='win32'
+      ? value=>`'${value.replaceAll("'", "''")}'`
+      : value=>`'${value.replaceAll("'", "'\\''")}'`;
+    const command=`${process.platform==='win32'?'& ':''}${quote(process.execPath)} ${quote(terminalFixture)}`;
+    const processResult = await call('start_process', { command, timeout_ms: 1000, ...(process.platform === 'win32' ? { shell: 'powershell.exe' } : {}) });
+    const sessionMatch=/Process started with PID (\d+)/.exec(JSON.stringify(processResult.content));
+    assert.ok(sessionMatch,JSON.stringify(processResult));
+    let processOutput=JSON.stringify(processResult.content);
+    const outputDeadline=Date.now()+10000;
+    while(!processOutput.includes('JRC_TERMINAL_OK') && Date.now()<outputDeadline) {
+      const output=await call('read_process_output',{pid:Number(sessionMatch[1]),timeout_ms:250});
+      processOutput+='\n'+JSON.stringify(output.content);
+    }
+    assert.match(processOutput,/JRC_TERMINAL_OK/);
     const state = await readFile(join(root, 'server', 'registry.json'), 'utf8');
     assert.ok(!state.includes(ownerToken)); assert.ok(!state.includes(credential.deviceToken));
     assert.ok(!state.includes('JRC_TERMINAL_OK')); assert.ok(!state.includes('JRC file round trip'));

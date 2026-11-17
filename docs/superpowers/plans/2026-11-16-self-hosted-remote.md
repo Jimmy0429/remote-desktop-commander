@@ -79,7 +79,7 @@ Files: `src/self-host/cli.ts`, `src/self-host/dashboard.ts`, `docs/self-hosted.m
 - [x] Build; run all new tests and upstream `npm test`; capture reports and investigate failures.
 - [x] Conduct independent code review of auth, replay, bounds, lifecycle, and docs; fix actionable findings with regression tests.
 - [x] Run a local real-engine demo and inspect dashboard; stop test agents after verification.
-- [ ] Commit/push implementation to the user's fork branch; record exact tested state and remaining deployment checks.
+- [x] Commit/push implementation to the user's fork branch; record exact tested state and remaining deployment checks.
 
 ## Execution Ledger
 
@@ -92,3 +92,5 @@ Files: `src/self-host/cli.ts`, `src/self-host/dashboard.ts`, `docs/self-hosted.m
 - Compatibility run: 272/274 files passed, 22 skipped checks. Both failures independently reproduced in unchanged upstream path-with-spaces code; see docs/self-host-verification.md.
 - Independent review fixes: separate rejected/authenticated rate limits, startup unknown-state reconciliation, explicit bundled ripgrep installation, secret-free Docker build context. Regression tests passed; focused re-review cleared findings.
 - Ruling: retain the two demonstrated upstream telemetry/install failures as documented limitations rather than widening this fork implementation to unrelated legacy fixes.
+
+- Implementation pushed as `af74356e`; draft PR #1 opened in the user fork. Initial Node 22 CI passed macOS and exposed test-readiness and Windows command-quoting assumptions. Follow-up validation uses bounded readiness polling and Windows PowerShell; Docker runtime verification added on Linux.

@@ -54,14 +54,30 @@ test('closing the local engine reaps terminal child processes', {timeout:30000},
   let worker;
   try {
     await engine.start();
-    const quote=value=>`'${value.replaceAll("'", "'\\''")}'`;
-    const code="console.log('WORKER-PID:'+process.pid);setTimeout(()=>{},60000)";
-    const command = process.platform === 'win32'
-      ? `"${process.execPath}" -e "${code}"`
-      : `${quote(process.execPath)} -e ${quote(code)}`;
-    const result=await engine.call('start_process',{command,timeout_ms:300,...(process.platform === 'win32' ? {shell:'cmd.exe'} : {})});
-    const match=/WORKER-PID:(\d+)/.exec(JSON.stringify(result));
-    assert.ok(match,JSON.stringify(result));
+    const quote=process.platform==='win32'
+      ? value=>`'${value.replaceAll("'", "''")}'`
+      : value=>`'${value.replaceAll("'", "'\\''")}'`;
+    // Delayed output makes the readiness race deterministic even on a fast local machine.
+    const code="setTimeout(()=>console.log('WORKER-PID:'+process.pid),600);setTimeout(()=>{},60000)";
+    const workerFile=path.join(f.workspace,'terminal worker.cjs');
+    await writeFile(workerFile,code);
+    // PowerShell's call operator executes a quoted path; the fixture path also exercises spaces.
+    const command=`${process.platform==='win32'?'& ':''}${quote(process.execPath)} ${quote(workerFile)}`;
+    const result=await engine.call('start_process',{command,timeout_ms:300,...(process.platform === 'win32' ? {shell:'powershell.exe'} : {})});
+    assert.ok(!result.isError,JSON.stringify(result));
+    const sessionMatch=/Process started with PID (\d+)/.exec(JSON.stringify(result));
+    assert.ok(sessionMatch,JSON.stringify(result));
+    const sessionPid=Number(sessionMatch[1]);
+    let observed=JSON.stringify(result);
+    let match=/WORKER-PID:(\d+)/.exec(observed);
+    const readyDeadline=Date.now()+10000;
+    while(!match && Date.now()<readyDeadline) {
+      const output=await engine.call('read_process_output',{pid:sessionPid,timeout_ms:250});
+      assert.ok(!output.isError,JSON.stringify(output));
+      observed+='\n'+JSON.stringify(output);
+      match=/WORKER-PID:(\d+)/.exec(observed);
+    }
+    assert.ok(match,`Worker did not report its PID before the readiness deadline: ${observed}`);
     worker=Number(match[1]);
     process.kill(worker,0);
     await engine.close();

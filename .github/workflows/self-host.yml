@@ -2,7 +2,7 @@ name: Self-hosted remote
 
 on:
   push:
-    branches: [main, feat/self-hosted-remote]
+    branches: [main]
     paths:
       - 'src/**'
       - 'test/test-self-host-*.js'
@@ -71,3 +71,112 @@ jobs:
         run: node dist/npm-scripts/verify-ripgrep.js
       - name: Run the self-host suite
         run: npm run test:self-host
+
+  container:
+    name: Docker server / Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build and verify the private server image
+        shell: bash
+        env:
+          JRC_SMOKE_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          image="jrc-smoke:${JRC_SMOKE_ID}"
+          volume="jrc-smoke-${JRC_SMOKE_ID}"
+          container="jrc-smoke-${JRC_SMOKE_ID}"
+          smoke_script="${RUNNER_TEMP}/jrc-docker-smoke-${JRC_SMOKE_ID}.mjs"
+          cleanup() {
+            docker rm -f "$container" "${container}-init" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+            docker image rm "$image" >/dev/null 2>&1 || true
+            rm -f "$smoke_script"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          docker build --file deploy/self-host/Dockerfile --tag "$image" .
+          test "$(docker image inspect --format '{{.Config.User}}' "$image")" = node
+          docker volume create "$volume" >/dev/null
+          docker run --rm --name "${container}-init" --network none \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=volume,source=${volume},target=/data" \
+            "$image" init --data-dir /data >/dev/null
+
+          # The credential is read only inside the container. Never print tokens,
+          # pairing codes, response bodies, or private volume contents to CI logs.
+          cat > "$smoke_script" <<'NODE'
+          import { readFileSync, writeFileSync, statSync } from 'node:fs';
+          import { setTimeout as delay } from 'node:timers/promises';
+          function check(condition, message) { if (!condition) throw new Error(message); }
+          check(process.getuid() !== 0, 'Server image must run as a non-root user.');
+          check((statSync('/data/owner-token').mode & 0o777) === 0o600, 'Owner token permissions must be 600.');
+          const ownerToken = readFileSync('/data/owner-token', 'utf8').trim();
+          const base = 'http://127.0.0.1:8787';
+          const host = 'commander.test';
+          async function request(path, { owner = false, body, requestHost = host } = {}) {
+            return fetch(base + path, {
+              method: body === undefined ? 'GET' : 'POST',
+              headers: {
+                Host: requestHost,
+                ...(owner ? { Authorization: 'Bearer ' + ownerToken } : {}),
+                ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+              },
+              body: body === undefined ? undefined : JSON.stringify(body),
+              redirect: 'error', signal: AbortSignal.timeout(1000),
+            });
+          }
+          let ready = false;
+          for (let attempt = 0; attempt < 30; attempt++) {
+            try {
+              const response = await request('/health');
+              if (response.status === 200 && (await response.json()).status === 'ok') { ready = true; break; }
+            } catch { /* Server startup is allowed a bounded readiness window. */ }
+            await delay(1000);
+          }
+          check(ready, 'Container health did not become ready within the polling deadline.');
+          check((await request('/api/devices')).status === 401, 'Protected API must reject a missing owner token.');
+          check((await request('/health', { requestHost: 'wrong.test' })).status === 403, 'Unexpected Host must be rejected.');
+          if (process.argv[2] === 'initial') {
+            const pairingResponse = await request('/api/pairings', { owner: true, body: {} });
+            check(pairingResponse.status === 200, 'Owner pairing request failed.');
+            const pairing = await pairingResponse.json();
+            const enrollmentResponse = await request('/api/enroll', { body: { code: pairing.code, name: 'Container smoke fixture', platform: 'linux' } });
+            check(enrollmentResponse.status === 200, 'Fixture enrollment failed.');
+            const enrollment = await enrollmentResponse.json();
+            check(typeof enrollment.deviceId === 'string', 'Enrollment did not return a device ID.');
+            writeFileSync('/data/smoke-device-id', enrollment.deviceId, { flag: 'wx', mode: 0o600 });
+          }
+          const deviceResponse = await request('/api/devices', { owner: true });
+          check(deviceResponse.status === 200, 'Owner credential did not authorize the request.');
+          const { devices } = await deviceResponse.json();
+          const expectedId = readFileSync('/data/smoke-device-id', 'utf8');
+          check(devices.some(device => device.id === expectedId && device.name === 'Container smoke fixture'), 'Enrolled device was not retained on the persistent volume.');
+          console.log('Container checks passed: non-root, private credential, health, authorization, host validation, and persistent enrollment.');
+          NODE
+
+          start_container() {
+            # No published ports or external network; all probes use container loopback.
+            docker run --detach --name "$container" --init --network none \
+              --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+              --cap-drop ALL --security-opt no-new-privileges \
+              --mount "type=volume,source=${volume},target=/data" \
+              "$image" serve --data-dir /data --host 127.0.0.1 \
+              --public-url https://commander.test >/dev/null
+          }
+          start_container
+          docker exec --interactive "$container" node --input-type=module - initial < "$smoke_script"
+          docker stop --time 15 "$container" >/dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
+          docker rm "$container" >/dev/null
+          start_container
+          docker exec --interactive "$container" node --input-type=module - restarted < "$smoke_script"
+          docker stop --time 15 "$container" >/dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
