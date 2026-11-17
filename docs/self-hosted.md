@@ -196,7 +196,7 @@ umask 077
 docker compose -f deploy/self-host/compose.yaml exec -T commander cat /data/owner-token > /private/path/owner-token
 ```
 
-Create the destination's parent directory first and choose a location outside the repository. Do not enable shell tracing. Open the resulting file locally to sign into the dashboard. The token is never embedded in Compose or passed as a process argument.
+Create a dedicated destination directory outside the repository first. On Unix it must be owned by you and have mode 700, in addition to the file having mode 600; a private file inside a shared directory is refused. On Windows use the dedicated protected storage described above. Do not enable shell tracing. Open the resulting file locally to sign into the dashboard. The token is never embedded in Compose or passed as a process argument.
 
 Stop with `docker compose -f deploy/self-host/compose.yaml down`. Do not add `--volumes` unless you intend to delete the persistent server and certificate state. Back up the private data volume and its ownership/permissions. Container builds, certificate issuance, and remote client connections need their own deployment verification; a successful source build does not establish those outcomes.
 

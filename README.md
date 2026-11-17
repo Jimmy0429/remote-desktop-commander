@@ -4,6 +4,8 @@ This is Jimmy0429's MIT-licensed fork of DesktopCommanderMCP, adding an independ
 
 **Start here: [Private server and agent setup](docs/self-hosted.md).** The first version includes bearer-token MCP access, device enrollment and revocation, an outbound agent, and a web dashboard. OAuth browser login and live screen/mouse control are not included.
 
+For the Windows pilot, read the [next-day handoff](CONTINUE-TOMORROW.md), [verification record](docs/self-host-verification.md), and [capability comparison](docs/self-host-capabilities.md). Windows state uses native access controls, and desktop MCP clients can connect through the private stdio bridge.
+
 Original project attribution and documentation follow. The upstream MIT license remains in [LICENSE](LICENSE).
 
 ---

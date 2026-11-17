@@ -19,6 +19,23 @@ import { writePrivateFile } from '../dist/self-host/private-storage.js';
 
 const bridgeUrl = new URL('../dist/self-host/bridge.js', import.meta.url).href;
 const token = () => randomBytes(32).toString('base64url');
+// CLI initialization includes a cold Windows PowerShell ACL check before MCP
+// starts. This is a process-start budget; forwarded request limits stay unchanged.
+const BRIDGE_STARTUP_TIMEOUT_MS = 30000;
+
+async function bridgePhase(t, label, run) {
+  const started = performance.now();
+  try {
+    const result = await run();
+    t.diagnostic(`Bridge phase ${label}: completed in ${Math.round(performance.now() - started)} ms`);
+    return result;
+  } catch (error) {
+    const kind = error?.name === 'McpError' ? 'MCP error' : error?.name === 'AssertionError' ? 'assertion' : 'error';
+    const code = Number.isSafeInteger(error?.code) ? ` ${error.code}` : '';
+    // Do not print caught error bodies, tool arguments, credentials, or URLs.
+    throw new Error(`Bridge phase ${label}: ${kind}${code} after ${Math.round(performance.now() - started)} ms`);
+  }
+}
 
 async function fixture(t) {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'jrc-bridge-')));
@@ -68,40 +85,45 @@ async function connectBridge(t, f, serverUrl, { allowFailure = false, useCli = f
   const errors = [];
   client.onerror = error => errors.push(error);
   f.cleanup.push(() => client.close());
-  const connected = client.connect(transport, { timeout: 10000 });
+  const connected = bridgePhase(t, useCli ? 'CLI MCP initialization' : 'fixture MCP initialization', () =>
+    client.connect(transport, { timeout: BRIDGE_STARTUP_TIMEOUT_MS }));
   if (allowFailure) await connected.catch(() => {});
   else await connected;
   return { client, transport, errors, stderr: () => stderr };
 }
 
-async function settledCall(client, name, args) {
-  let result = await client.callTool({ name, arguments: args }, undefined, { timeout: 10000 });
+async function settledCall(t, client, name, args) {
+  let result = await bridgePhase(t, `${name} initial tools/call`, () =>
+    client.callTool({ name, arguments: args }, undefined, { timeout: 10000 }));
   const callId = result.structuredContent?.callId;
   if (callId) {
-    const deadline = Date.now() + 15000;
-    while (result.structuredContent?.status === 'running') {
-      assert.ok(Date.now() < deadline, 'Remote result polling exceeded its deadline.');
-      await delay(25);
-      result = await client.callTool({ name: 'get_remote_call', arguments: { callId } }, undefined, { timeout: 5000 });
-      assert.equal(result.structuredContent.callId, callId);
-    }
-    assert.equal(result.structuredContent.status, 'completed', JSON.stringify(result));
-    result = result.structuredContent.result;
+    await bridgePhase(t, `${name} retained-result polling`, async () => {
+      const deadline = Date.now() + 15000;
+      while (result.structuredContent?.status === 'running') {
+        assert.ok(Date.now() < deadline, 'Remote result polling exceeded its deadline.');
+        await delay(25);
+        result = await client.callTool({ name: 'get_remote_call', arguments: { callId } }, undefined, { timeout: 5000 });
+        assert.equal(result.structuredContent.callId, callId);
+      }
+      assert.equal(result.structuredContent.status, 'completed', JSON.stringify(result));
+      result = result.structuredContent.result;
+    });
   }
   assert.notEqual(result.isError, true, JSON.stringify(result));
   return { result, callId };
 }
 
 test('stdio bridge preserves tools and async results through a real server and agent, without replaying a lost response', { timeout: 45000 }, async t => {
-  const f = await fixture(t);
-  const server = await createControlServer({ dataDir: join(f.base, 'server'), ownerToken: f.ownerToken, port: 0, waitMs: 1 });
+  const step = (label, run) => bridgePhase(t, label, run);
+  const f = await step('private fixture setup', () => fixture(t));
+  const server = await step('control server startup', () => createControlServer({ dataDir: join(f.base, 'server'), ownerToken: f.ownerToken, port: 0, waitMs: 1 }));
   f.cleanup.push(() => server.close());
   const api = async (path, body) => (await fetch(server.url + path, {
     method: 'POST', headers: { Authorization: `Bearer ${f.ownerToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   })).json();
-  const pairing = await api('/api/pairings', {});
-  const enrollment = await api('/api/enroll', { code: pairing.code, name: 'Bridge fixture', platform: process.platform });
-  const agent = await startAgent({ serverUrl: server.url, deviceToken: enrollment.token, workspace: f.workspace, stateDir: join(f.base, 'engine') });
+  const pairing = await step('pairing', () => api('/api/pairings', {}));
+  const enrollment = await step('enrollment', () => api('/api/enroll', { code: pairing.code, name: 'Bridge fixture', platform: process.platform }));
+  const agent = await step('agent and engine startup', () => startAgent({ serverUrl: server.url, deviceToken: enrollment.token, workspace: f.workspace, stateDir: join(f.base, 'engine') }));
   f.cleanup.push(() => agent.close());
   let dropNextAppend = false;
   let appendDispatches = 0;
@@ -131,27 +153,27 @@ test('stdio bridge preserves tools and async results through a real server and a
     } catch { res.destroy(); }
   });
   const bridge = await connectBridge(t, f, proxy.url, { useCli: true });
-  const tools = await bridge.client.listTools();
+  const tools = await step('bridge tools/list', () => bridge.client.listTools());
   const direct = new Client({ name: 'bridge-parity-test', version: '1' });
   f.cleanup.push(() => direct.close());
-  await direct.connect(new StreamableHTTPClientTransport(new URL(server.url + '/mcp'), { requestInit: { headers: { Authorization: `Bearer ${f.ownerToken}` } } }));
-  assert.deepEqual(tools, await direct.listTools());
-  const devices = await bridge.client.callTool({ name: 'list_devices', arguments: {} });
+  await step('direct HTTP MCP initialization', () => direct.connect(new StreamableHTTPClientTransport(new URL(server.url + '/mcp'), { requestInit: { headers: { Authorization: `Bearer ${f.ownerToken}` } } })));
+  assert.deepEqual(tools, await step('direct HTTP tools/list', () => direct.listTools()));
+  const devices = await step('list_devices tools/call', () => bridge.client.callTool({ name: 'list_devices', arguments: {} }));
   assert.ok(devices.structuredContent.devices.some(d => d.id === enrollment.deviceId && d.online));
-  const missingSelector = await bridge.client.callTool({ name: 'read_file', arguments: { path: 'not forwarded' } });
+  const missingSelector = await step('missing-selector refusal', () => bridge.client.callTool({ name: 'read_file', arguments: { path: 'not forwarded' } }));
   assert.equal(missingSelector.isError, true);
   const args = extra => ({ deviceId: enrollment.deviceId, ...extra });
   const file = join(f.workspace, 'bridge round trip.txt');
-  await settledCall(bridge.client, 'write_file', args({ path: file, content: 'BRIDGE_FILE_MARKER\n' }));
+  await settledCall(t, bridge.client, 'write_file', args({ path: file, content: 'BRIDGE_FILE_MARKER\n' }));
   assert.equal(await readFile(file, 'utf8'), 'BRIDGE_FILE_MARKER\n');
-  assert.match(JSON.stringify((await settledCall(bridge.client, 'read_file', args({ path: file }))).result), /BRIDGE_FILE_MARKER/);
-  const search = (await settledCall(bridge.client, 'start_search', args({ path: f.workspace, pattern: 'BRIDGE_FILE_MARKER', searchType: 'content', literalSearch: true }))).result;
+  assert.match(JSON.stringify((await settledCall(t, bridge.client, 'read_file', args({ path: file }))).result), /BRIDGE_FILE_MARKER/);
+  const search = (await settledCall(t, bridge.client, 'start_search', args({ path: f.workspace, pattern: 'BRIDGE_FILE_MARKER', searchType: 'content', literalSearch: true }))).result;
   const sessionId = JSON.stringify(search).match(/session: (search_[A-Za-z0-9_]+)/)?.[1];
   assert.ok(sessionId, JSON.stringify(search));
   let results;
   const deadline = Date.now() + 10000;
   do {
-    results = (await settledCall(bridge.client, 'get_more_search_results', args({ sessionId, offset: 0, length: 20 }))).result;
+    results = (await settledCall(t, bridge.client, 'get_more_search_results', args({ sessionId, offset: 0, length: 20 }))).result;
     if (!JSON.stringify(results).includes('COMPLETED')) await delay(25);
   } while (!JSON.stringify(results).includes('COMPLETED') && Date.now() < deadline);
   assert.match(JSON.stringify(results), /bridge round trip\.txt/);
@@ -160,7 +182,7 @@ test('stdio bridge preserves tools and async results through a real server and a
   await writeFile(worker, "setTimeout(()=>console.log('BRIDGE_PROCESS_MARKER'),1000)");
   const quote = process.platform === 'win32' ? value => "'" + value.replaceAll("'", "''") + "'" : value => "'" + value.replaceAll("'", "'\\''") + "'";
   const command = (process.platform === 'win32' ? '& ' : '') + quote(process.execPath) + ' ' + quote(worker);
-  const processResult = await settledCall(bridge.client, 'start_process', args({ command, timeout_ms: 3000, ...(process.platform === 'win32' ? { shell: 'powershell.exe' } : {}) }));
+  const processResult = await settledCall(t, bridge.client, 'start_process', args({ command, timeout_ms: 3000, ...(process.platform === 'win32' ? { shell: 'powershell.exe' } : {}) }));
   assert.ok(processResult.callId, 'Slow operation must expose the remote call ID without resubmission.');
   assert.match(JSON.stringify(processResult.result), /BRIDGE_PROCESS_MARKER/);
   assert.equal(bridge.errors.length, 0, 'Stdout must contain protocol messages only.');
@@ -181,7 +203,7 @@ test('stdio bridge preserves tools and async results through a real server and a
   assert.equal(await readFile(file, 'utf8'), 'BRIDGE_FILE_MARKER\nONCE_ONLY\n');
   assert.ok(!bridge.stderr().includes(f.ownerToken));
   assert.match(bridge.stderr(), /may have executed|unknown/i);
-  assert.match(JSON.stringify((await settledCall(bridge.client, 'read_file', args({ path: file }))).result), /ONCE_ONLY/);
+  assert.match(JSON.stringify((await settledCall(t, bridge.client, 'read_file', args({ path: file }))).result), /ONCE_ONLY/);
   assert.equal(appendDispatches, 1, 'Explicit state inspection must not replay the failed append.');
 });
 

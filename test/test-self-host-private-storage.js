@@ -46,7 +46,12 @@ public static class JrcNullAclFixture {
   $nullDacl=[JrcNullAclFixture]::SetNull([string]$r.path)
   $acl=Get-Acl -LiteralPath $r.path
 }
-$rules=@($acl.Access | ForEach-Object { [pscustomobject]@{sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;allow=($_.AccessControlType -eq 'Allow');inherited=$_.IsInherited} })
+if($r.action -eq 'foreign-owner') {
+  & (Join-Path $env:SystemRoot 'System32\icacls.exe') ([string]$r.path) '/setowner' '*S-1-5-32-545' '/Q' | Out-Null
+  if($LASTEXITCODE -ne 0) {throw 'Could not set the temporary fixture owner'}
+  $acl=Get-Acl -LiteralPath $r.path
+}
+$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object { [pscustomobject]@{sid=$_.IdentityReference.Value;allow=($_.AccessControlType -eq 'Allow');inherited=$_.IsInherited;inheritOnly=(($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0);rights=[long]$_.FileSystemRights} })
 [pscustomobject]@{owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;protected=$acl.AreAccessRulesProtected;nullDacl=$nullDacl;rules=$rules} | ConvertTo-Json -Depth 5 -Compress
 `;
 function windowsAcl(path,action='inspect',sid='S-1-5-32-545') {
@@ -117,6 +122,28 @@ test('Windows storage checks replacement rights above its immediate parent', {sk
     windowsAcl(root,'replaceable');
     assert.ok(!windowsAcl(state).rules.some(rule=>rule.allow&&rule.sid==='S-1-5-32-545'),'the protected immediate parent must remain private');
     const result=run('agent','--credentials',credential);assert.notEqual(result.status,0);assert.match(result.stderr,/\[unsafe-parent\]/);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('Windows storage rejects a foreign-owned ancestor even without foreign replacement ACEs', {skip:process.platform!=='win32'},()=>{
+  const root=mkdtempSync(join(tmpdir(),'jrc-private-owner-'));
+  try {
+    const state=join(root,'state');const nested=join(state,'engine');
+    for(const dir of [state,nested]) {const result=run('init','--data-dir',dir);assert.equal(result.status,0,result.stderr);}
+    const credential=join(nested,'agent.json');writeFileSync(credential,JSON.stringify({serverUrl:'http://127.0.0.1:1',deviceToken:'fixture'}));
+    assert.match(run('agent','--credentials',credential).stderr,/Choose --workspace/);
+    const observed=windowsAcl(root,'foreign-owner');
+    assert.equal(observed.owner,'S-1-5-32-545','the temporary ancestor must actually have a foreign owner');
+    const trusted=[observed.currentSid,'S-1-5-18','S-1-5-32-544'];
+    const replacementRights=0x10000|0x40|0x40000|0x80000; // DELETE, DELETE_CHILD, WRITE_DAC, WRITE_OWNER.
+    assert.ok(!observed.rules.some(rule=>rule.allow&&!rule.inheritOnly&&!trusted.includes(rule.sid)&&(rule.rights&replacementRights)),
+      'the owner alone must supply the unsafe authority, not a foreign replacement grant');
+    assert.equal(windowsAcl(state).owner,observed.currentSid,'the immediate parent stays trusted-owned');
+    const read=run('agent','--credentials',credential);assert.notEqual(read.status,0);assert.match(read.stderr,/\[unexpected-owner\]/);
+    const newState=join(nested,'state');const created=run('init','--data-dir',newState);
+    assert.notEqual(created.status,0);assert.match(created.stderr,/\[unexpected-owner\]/);assert.equal(existsSync(join(newState,'owner-token')),false);
+    const before=privacySnapshot(nested);const protectedResult=run('protect','--data-dir',nested);
+    assert.notEqual(protectedResult.status,0);assert.match(protectedResult.stderr,/\[unexpected-owner\]/);assert.deepEqual(privacySnapshot(nested),before);
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 

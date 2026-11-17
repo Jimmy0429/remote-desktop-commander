@@ -19,6 +19,7 @@ try {
   $r=ConvertFrom-Json ([Console]::In.ReadToEnd())
   $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
   $trusted=@($user.Value,'S-1-5-18','S-1-5-32-544')
+  $trustedInstaller='S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
   $replacement=[long][Security.AccessControl.FileSystemRights]::Delete -bor [long][Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [long][Security.AccessControl.FileSystemRights]::ChangePermissions -bor [long][Security.AccessControl.FileSystemRights]::TakeOwnership
   $danger=$replacement -bor [long][Security.AccessControl.FileSystemRights]::Write
   function Fail([string]$code) {$script:reason=$code;throw 'Private storage validation failed'}
@@ -41,11 +42,13 @@ try {
     $raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0)
     if($null -eq $raw.DiscretionaryAcl) {Fail 'null-dacl'}
     $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if($scope -ne 'ancestor' -and $trusted -notcontains $owner) {Fail 'unexpected-owner'}
+    # An owner can rewrite the DACL even without an explicit replacement grant.
+    # Only OS ancestors may additionally be owned/managed by TrustedInstaller.
+    if($trusted -notcontains $owner -and -not ($scope -eq 'ancestor' -and $owner -eq $trustedInstaller)) {Fail 'unexpected-owner'}
     foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
       if($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {continue}
       $sid=$rule.IdentityReference.Value
-      if($trusted -contains $sid) {continue}
+      if($trusted -contains $sid -or ($scope -eq 'ancestor' -and $sid -eq $trustedInstaller)) {continue}
       if($sid -eq 'S-1-3-0' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) {continue}
       if($scope -eq 'ancestor' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) {continue}
       if($scope -eq 'private') {Fail 'foreign-access'}
