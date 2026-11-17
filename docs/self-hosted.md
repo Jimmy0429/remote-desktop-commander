@@ -83,7 +83,18 @@ Open the server address in a browser and enter the owner token. The dashboard ho
 
 ## Enroll a computer
 
-Create a one-use pairing file on the server machine:
+Before transferring a pairing file to a new Windows agent computer, build the repository there and prepare its default private state directory. These commands are for a new, empty destination; if it already exists, follow the existing-storage guidance above instead.
+
+```powershell
+$jrcAgentState = Join-Path $env:LOCALAPPDATA 'JimmyRemoteCommander'
+New-Item -ItemType Directory -Path $jrcAgentState -ErrorAction Stop | Out-Null
+node dist/self-host/cli.js protect --data-dir $jrcAgentState
+if ($LASTEXITCODE -ne 0) { throw 'Private state preparation failed; do not transfer credentials.' }
+```
+
+Save or copy the pairing file into `$jrcAgentState\pairing-code` through your private transfer channel. Create the file in this protected directory so it inherits the directory's permissions; do not move a file while preserving permissions from another directory. The enrollment command rechecks the file before using it.
+
+Create a one-use pairing file on the server machine. The loopback commands below apply to a local server without `--public-url`; when a public URL is configured, use that exact HTTPS origin for every CLI request, including requests from the server machine:
 
 ```sh
 npm run self-host -- pair --server http://127.0.0.1:8787 --token-file .self-host/server/owner-token --pairing-file .self-host/pairing-code
@@ -98,6 +109,16 @@ npm run self-host -- enroll --server http://127.0.0.1:8787 --pairing-file .self-
 ```
 
 The loopback example assumes the agent and server run on the same machine. For another computer, use the server's configured HTTPS origin, such as `https://commander.example.com`. Enrollment is a deliberate local action and creates the device credential file. A pairing code cannot be used twice. Remove the pairing file after enrollment; keep the agent credential private.
+
+On the new Windows computer prepared above, use the LocalAppData defaults instead of the Unix `.self-host` paths:
+
+```powershell
+node dist/self-host/cli.js enroll --server https://commander.example.com
+if ($LASTEXITCODE -ne 0) { throw 'Enrollment failed; keep the pairing file and check the error.' }
+Remove-Item -LiteralPath (Join-Path $jrcAgentState 'pairing-code')
+```
+
+Replace the example HTTPS origin with your configured server origin.
 
 Start the enrolled agent with absolute workspace and state-directory paths:
 
@@ -116,7 +137,7 @@ npm run self-host -- devices --server http://127.0.0.1:8787 --token-file .self-h
 npm run self-host -- revoke --server http://127.0.0.1:8787 --token-file .self-host/server/owner-token --device-id DEVICE_ID
 ```
 
-Revocation closes the current connection and prevents those credentials from reconnecting. To restore access, deliberately enroll the computer again with a new pairing code.
+Revocation closes the current connection and prevents those credentials from reconnecting. To restore access, stop the old agent and deliberately enroll the computer again with a new pairing code. Enrollment never overwrites an existing credential file: choose a fresh `--credentials` path, or deliberately remove the old credential after confirming its revocation. Start the replacement agent with the matching credential path and its intended state directory.
 
 ## Connect an MCP client
 
@@ -152,7 +173,16 @@ Example Windows configuration (replace the paths and server origin):
 }
 ```
 
-The credential file must contain the server's actual owner token and pass the same private-storage checks. Protect the dedicated client directory **before** transferring the token. The configuration format belongs to the chosen client; a successful bridge test is not proof that every client or the ChatGPT cloud connector accepts this format.
+The credential file must contain the server's actual owner token and pass the same private-storage checks. From the built repository, create and protect a new dedicated client directory **before** transferring the token:
+
+```powershell
+$jrcClientState = Join-Path $env:LOCALAPPDATA 'JimmyRemoteCommander\client'
+New-Item -ItemType Directory -Path $jrcClientState -ErrorAction Stop | Out-Null
+node dist/self-host/cli.js protect --data-dir $jrcClientState
+if ($LASTEXITCODE -ne 0) { throw 'Private client preparation failed; do not transfer the token.' }
+```
+
+If the directory already exists, use the existing-storage guidance above instead. Save or copy the actual owner token to `$jrcClientState\owner-token` through your private transfer channel, letting the new file inherit the protected destination permissions. Do not move it while preserving permissions from another directory. Point the client's `--token-file` argument at that file. The configuration format belongs to the chosen client; a successful bridge test is not proof that every client or the ChatGPT cloud connector accepts this format.
 
 The bridge exposes the private server's tool catalog, supports asynchronous call-ID polling, refuses redirects, and caps request/response sizes and waiting time. It does not retry tool submissions. A failed response may leave execution uncertain; inspect device state before repeating a write. Closing the desktop client closes its bridge, not the remote agent. The owner token still controls all enrolled devices; separate revocable client credentials are not implemented yet.
 
@@ -164,7 +194,7 @@ Long-running operations may return a call ID. Use `get_remote_call` to check tha
 
 ## Host behind HTTPS
 
-For a remote deployment, choose a hostname, point its DNS records at the server, and place the control server behind a TLS proxy. The app requires HTTPS/WSS for non-loopback deployments. Configure one public origin and preserve its host header through the proxy; arbitrary forwarded headers are not used to select a trusted origin.
+For a remote deployment, choose a hostname, point its DNS records at the server, and place the control server behind a TLS proxy. The app requires HTTPS/WSS for non-loopback deployments. Configure one public origin and preserve its host header through the proxy; arbitrary forwarded headers are not used to select a trusted origin. Once `--public-url` is set, use that exact HTTPS origin for all CLI, agent, and bridge connections, even from the server machine; direct loopback requests are rejected by the Host check.
 
 On a host with Caddy as the proxy, a process invocation can be:
 
@@ -172,7 +202,15 @@ On a host with Caddy as the proxy, a process invocation can be:
 npm run self-host -- serve --data-dir .self-host/server --host 127.0.0.1 --port 8787 --public-url https://commander.example.com
 ```
 
-Proxy that hostname to `127.0.0.1:8787`. The example Caddyfile under `deploy/self-host` handles HTTPS and WebSocket upgrades. Keep the app's port private. The owner token controls all enrolled computers; protect access to it and to the server's persistent storage.
+For Caddy running directly on that host, proxy the hostname to the local process:
+
+```caddyfile
+commander.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+Replace the example hostname with your configured hostname. The bundled `deploy/self-host/Caddyfile` is for the Compose deployment below: its upstream is `commander:8787`, the container's private network name. Keep the app's port private. The owner token controls all enrolled computers; protect access to it and to the server's persistent storage.
 
 ### Container example
 

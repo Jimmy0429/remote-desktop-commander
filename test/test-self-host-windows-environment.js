@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {getDefaultEnvironment} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {writePrivateFile} from '../dist/self-host/private-storage.js';
 
-test('Windows private credential checks work in an MCP client filtered environment', {skip:process.platform!=='win32',timeout:120000},async t=>{
+test('Windows private credential checks work in an MCP client filtered environment', {skip:process.platform!=='win32',timeout:45000},async t=>{
   const root=mkdtempSync(join(tmpdir(),'jrc-environment-'));
   try {
     const credential=join(root,'state','owner-token');writePrivateFile(credential,'synthetic-environment-fixture');
@@ -23,10 +23,13 @@ test('Windows private credential checks work in an MCP client filtered environme
         const index=args.indexOf('-Command');
         const changed=[...args];
         const marker=phase=>"[Console]::Error.WriteLine('JRC_ACL_PHASE:"+phase+"')\\n";
-        changed[index+1]=marker('script-start')+changed[index+1]
+        const modules=process.argv[3]==='import-inbox'
+          ? ['Utility','Management','Security'].map(name=>marker(name.toLowerCase()+'-import-start')+"Import-Module ([IO.Path]::Combine($PSHOME,'Modules/Microsoft.PowerShell."+name+"/Microsoft.PowerShell."+name+".psd1')) -Force\\n"+marker(name.toLowerCase()+'-import-done')).join('')
+          : '';
+        changed[index+1]=marker('script-start')+modules+changed[index+1]
           .replace("[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)",marker('input-encoding-start')+"[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)\\n"+marker('input-encoding-done'))
           .replace("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)",marker('output-encoding-start')+"[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)\\n"+marker('output-encoding-done'))
-          .replace("$r=ConvertFrom-Json ([Console]::In.ReadToEnd())",marker('stdin-start')+"$r=ConvertFrom-Json ([Console]::In.ReadToEnd())\\n"+marker('stdin-done'))
+          .replace("$r=ConvertFrom-Json ([Console]::In.ReadToEnd())",marker('stdin-start')+"$payload=[Console]::In.ReadToEnd()\\n"+marker('stdin-read-done')+"$r=ConvertFrom-Json $payload\\n"+marker('json-parse-done'))
           .replace("$user=[Security.Principal.WindowsIdentity]::GetCurrent().User",marker('identity-start')+"$user=[Security.Principal.WindowsIdentity]::GetCurrent().User\\n"+marker('identity-done'))
           .replace("$acl=Get-Acl -LiteralPath $p",marker('acl-query-start')+"$acl=Get-Acl -LiteralPath $p\\n"+marker('acl-query-done'));
         const result=original(file,changed,{...options,timeout:6000});
@@ -40,19 +43,21 @@ test('Windows private credential checks work in an MCP client filtered environme
       catch(error) {process.stdout.write(JSON.stringify({kind:'result',ok:false,reason:/\\[([a-z-]+)\\]/.exec(error.message)?.[1]||'other'})+'\\n');process.exitCode=1;}
     `);
     const filtered=getDefaultEnvironment();
-    const variants=[['full',process.env,false],['sdk',filtered,false],['sdk-detached',filtered,true],['sdk-stdin-closed',filtered,false,true]];
-    for(const name of ['ProgramData','ComSpec','PATHEXT','WINDIR','TMP','ALLUSERSPROFILE']) {
-      const value=process.env[name];if(value!==undefined)variants.push([`sdk-plus-${name}`,{...filtered,[name]:value},false]);
-    }
+    // The previous native run ruled out detached console/closed parent stdin
+    // and each common Windows environment add-back. Keep only the failing
+    // environment and one explicit inbox-module import to separate JSON work.
+    const variants=[['full',process.env],['sdk',filtered],['sdk-inbox-modules',filtered,'import-inbox']];
+    const cacheKey=Object.keys(process.env).find(key=>key.toLowerCase()==='psmoduleanalysiscachepath');
+    if(cacheKey)variants.push(['sdk-analysis-cache',{...filtered,PSModuleAnalysisCachePath:process.env[cacheKey]}]);
     const reports=[];
-    for(const [name,env,detached,closeStdin] of variants) {
+    for(const [name,env,variant] of variants) {
       const start=performance.now();
       const result=await new Promise(resolve=>{
-        const child=spawn(process.execPath,[entry,credential],{env,detached,windowsHide:true,stdio:['pipe','pipe','pipe']});
+        const child=spawn(process.execPath,[entry,credential,variant||'baseline'],{env,windowsHide:true,stdio:['pipe','pipe','pipe']});
         let stdout='';let processError=null;
         const timer=setTimeout(()=>{processError='ETIMEDOUT';child.kill();},10000);
         child.stdout.setEncoding('utf8');child.stdout.on('data',chunk=>{stdout+=chunk;});child.stderr.resume();
-        child.stdin.on('error',()=>{});if(closeStdin)child.stdin.end();
+        child.stdin.on('error',()=>{});
         child.on('error',error=>{processError=error.code||'spawn-error';});
         child.on('close',status=>{clearTimeout(timer);child.stdin.destroy();resolve({stdout,status,processError});});
       });
