@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,chmodSync,statSync,rmSync,symlinkSync} from 'node:fs';
-import {join} from 'node:path';
+import {join,dirname} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 
@@ -23,12 +23,38 @@ if($r.action -eq 'broad' -or $r.action -eq 'replaceable') {
   Set-Acl -LiteralPath $r.path -AclObject $acl
   $acl=Get-Acl -LiteralPath $r.path
 }
+if($r.action -eq 'null') {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class JrcNullAclFixture {
+  [DllImport("advapi32.dll",CharSet=CharSet.Unicode)]
+  public static extern uint SetNamedSecurityInfo(string name,uint type,uint info,IntPtr owner,IntPtr group,IntPtr dacl,IntPtr sacl);
+  [DllImport("advapi32.dll",CharSet=CharSet.Unicode)]
+  public static extern uint GetNamedSecurityInfo(string name,uint type,uint info,out IntPtr owner,out IntPtr group,out IntPtr dacl,out IntPtr sacl,out IntPtr descriptor);
+  [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr handle);
+  public static bool SetNull(string path) {
+    uint code=SetNamedSecurityInfo(path,1,0x80000004,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero);
+    if(code!=0) throw new System.ComponentModel.Win32Exception((int)code);
+    IntPtr owner,group,dacl,sacl,descriptor;
+    code=GetNamedSecurityInfo(path,1,4,out owner,out group,out dacl,out sacl,out descriptor);
+    if(code!=0) throw new System.ComponentModel.Win32Exception((int)code);
+    bool result=dacl==IntPtr.Zero;LocalFree(descriptor);return result;
+  }
+}
+'@
+  $nullDacl=[JrcNullAclFixture]::SetNull([string]$r.path)
+  $acl=Get-Acl -LiteralPath $r.path
+}
 $rules=@($acl.Access | ForEach-Object { [pscustomobject]@{sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;allow=($_.AccessControlType -eq 'Allow');inherited=$_.IsInherited} })
-[pscustomobject]@{owner=$acl.Owner;protected=$acl.AreAccessRulesProtected;rules=$rules} | ConvertTo-Json -Depth 5 -Compress
+[pscustomobject]@{owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;protected=$acl.AreAccessRulesProtected;nullDacl=$nullDacl;rules=$rules} | ConvertTo-Json -Depth 5 -Compress
 `;
 function windowsAcl(path,action='inspect',sid='S-1-5-32-545') {
-  const result=spawnSync(join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),
-    ['-NoProfile','-NonInteractive','-Command',psScript],{input:JSON.stringify({path,action,sid}),encoding:'utf8',timeout:15000,windowsHide:true});
+  const executable=join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe');
+  const env=Object.fromEntries(Object.entries(process.env).filter(([name])=>name.toLowerCase()!=='psmodulepath'));
+  env.PSModulePath=join(dirname(executable),'Modules');
+  const result=spawnSync(executable,
+    ['-NoProfile','-NonInteractive','-Command',psScript],{input:JSON.stringify({path,action,sid}),env,encoding:'utf8',timeout:15000,windowsHide:true});
   assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout.replace(/^\uFEFF/,''));
 }
 function makeBroad(path) {if(process.platform==='win32')windowsAcl(path,'broad');else chmodSync(path,statSync(path).isDirectory()?0o755:0o644);}
@@ -45,6 +71,52 @@ test('new secret storage is protected without changing its existing parent',()=>
       assert.equal(windowsAcl(state).protected,true);
       assert.ok(!windowsAcl(join(state,'owner-token')).rules.some(rule=>rule.allow&&rule.sid==='S-1-5-32-545'));
     } else {assert.equal(privacySnapshot(state),0o700);assert.equal(privacySnapshot(join(state,'owner-token')),0o600);}
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('Windows storage helper ignores inherited untrusted PowerShell module paths', {skip:process.platform!=='win32'},()=>{
+  const root=mkdtempSync(join(tmpdir(),'jrc-private-modules-'));
+  try {
+    const modules=join(root,'modules');const module=join(modules,'Microsoft.PowerShell.Security');mkdirSync(module,{recursive:true});
+    const marker=join(root,'untrusted-module-loaded');
+    writeFileSync(join(module,'Microsoft.PowerShell.Security.psd1'),"@{RootModule='Microsoft.PowerShell.Security.psm1';ModuleVersion='99.0.0';FunctionsToExport=@('Get-Acl','Set-Acl')}");
+    writeFileSync(join(module,'Microsoft.PowerShell.Security.psm1'),"[IO.File]::WriteAllText($env.JRC_UNTRUSTED_MODULE_MARKER,'unexpected'); throw 'UNTRUSTED_MODULE_LOADED'");
+    const state=join(root,'state');
+    const inherited=Object.fromEntries(Object.entries(process.env).filter(([name])=>name.toLowerCase()!=='psmodulepath'));
+    const result=spawnSync(process.execPath,[cli,'init','--data-dir',state],{encoding:'utf8',timeout:20000,
+      env:{...inherited,PSModulePath:modules,JRC_UNTRUSTED_MODULE_MARKER:marker}});
+    assert.equal(result.status,0,result.stderr);assert.equal(existsSync(marker),false);
+    assert.equal(windowsAcl(state).protected,true);assert.ok(existsSync(join(state,'owner-token')));
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('Windows storage refuses a real null DACL and a foreign owner', {skip:process.platform!=='win32'},async()=>{
+  const {assertPrivateFile}=await import('../dist/self-host/private-storage.js');
+  const root=mkdtempSync(join(tmpdir(),'jrc-private-null-'));
+  try {
+    const state=join(root,'state');const initialized=run('init','--data-dir',state);assert.equal(initialized.status,0,initialized.stderr);
+    const credential=join(state,'agent.json');writeFileSync(credential,JSON.stringify({serverUrl:'http://127.0.0.1:1',deviceToken:'fixture'}));
+    assert.equal(windowsAcl(credential,'null').nullDacl,true,'the fixture must have a real native null DACL');
+    const result=run('agent','--credentials',credential);assert.notEqual(result.status,0);assert.match(result.stderr,/\[(null-dacl|foreign-access)\]/);
+    assert.equal(run('protect','--data-dir',state).status,0);
+    // Read only ACL metadata from a standard TrustedInstaller-owned OS file;
+    // no privileged test account, OS ACL change, or file-content read is needed.
+    const foreign=join(process.env.SystemRoot,'System32','kernel32.dll');const observed=windowsAcl(foreign);
+    assert.ok(![observed.currentSid,'S-1-5-18','S-1-5-32-544'].includes(observed.owner),'the OS fixture must actually have a foreign owner');
+    assert.throws(()=>assertPrivateFile(foreign),/\[unexpected-owner\]/);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test('Windows storage checks replacement rights above its immediate parent', {skip:process.platform!=='win32'},()=>{
+  const root=mkdtempSync(join(tmpdir(),'jrc-private-ancestor-'));
+  try {
+    const state=join(root,'state');const nested=join(state,'engine');
+    for(const dir of [state,nested]) {const result=run('init','--data-dir',dir);assert.equal(result.status,0,result.stderr);}
+    const credential=join(nested,'agent.json');writeFileSync(credential,JSON.stringify({serverUrl:'http://127.0.0.1:1',deviceToken:'fixture'}));
+    assert.match(run('agent','--credentials',credential).stderr,/Choose --workspace/);
+    windowsAcl(root,'replaceable');
+    assert.ok(!windowsAcl(state).rules.some(rule=>rule.allow&&rule.sid==='S-1-5-32-545'),'the protected immediate parent must remain private');
+    const result=run('agent','--credentials',credential);assert.notEqual(result.status,0);assert.match(result.stderr,/\[unsafe-parent\]/);
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 

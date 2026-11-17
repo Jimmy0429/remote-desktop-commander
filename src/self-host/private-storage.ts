@@ -4,7 +4,8 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 
 const repair = 'Use a new dedicated private state directory, or stop its processes and run protect --data-dir DIR on dedicated application state.';
-const unavailable = () => new Error(`Private storage permissions are unavailable or unsafe. ${repair}`);
+const reasons=new Set(['permissions','helper-unavailable','helper-timeout','helper-response','helper-runtime','acl-query','acl-parse','null-dacl','unexpected-owner','foreign-access','unsafe-parent','reparse-path','nonlocal-filesystem','missing-parent','not-directory','not-file','create-directory','protect-state']);
+const unavailable = (reason='permissions') => new Error(`Private storage permissions are unavailable or unsafe [${reasons.has(reason)?reason:'helper-runtime'}]. ${repair}`);
 
 // Paths and operations arrive as JSON on stdin. No path, SID, or secret is
 // interpolated into executable PowerShell. Only the inbox Windows PowerShell
@@ -13,42 +14,52 @@ const aclScript = String.raw`
 $ErrorActionPreference='Stop'
 [Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+$script:reason='helper-runtime'
 try {
   $r=ConvertFrom-Json ([Console]::In.ReadToEnd())
   $user=[Security.Principal.WindowsIdentity]::GetCurrent().User
   $trusted=@($user.Value,'S-1-5-18','S-1-5-32-544')
-  $danger=[long][Security.AccessControl.FileSystemRights]::Write -bor [long][Security.AccessControl.FileSystemRights]::Delete -bor [long][Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [long][Security.AccessControl.FileSystemRights]::ChangePermissions -bor [long][Security.AccessControl.FileSystemRights]::TakeOwnership
+  $replacement=[long][Security.AccessControl.FileSystemRights]::Delete -bor [long][Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [long][Security.AccessControl.FileSystemRights]::ChangePermissions -bor [long][Security.AccessControl.FileSystemRights]::TakeOwnership
+  $danger=$replacement -bor [long][Security.AccessControl.FileSystemRights]::Write
+  function Fail([string]$code) {$script:reason=$code;throw 'Private storage validation failed'}
   function NoReparse([string]$p) {
     $cursor=[IO.Path]::GetFullPath($p)
-    if($cursor -notmatch '^[A-Za-z]:\\') {throw 'Local ACL filesystem required'}
+    if($cursor -notmatch '^[A-Za-z]:\\') {Fail 'nonlocal-filesystem'}
     while($cursor) {
       if(Test-Path -LiteralPath $cursor) {
-        if(((Get-Item -Force -LiteralPath $cursor).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {throw 'Reparse path'}
+        if(((Get-Item -Force -LiteralPath $cursor).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {Fail 'reparse-path'}
       }
       $parent=[IO.Directory]::GetParent($cursor)
       if($null -eq $parent) {break};$cursor=$parent.FullName
     }
   }
-  function CheckAcl([string]$p,[bool]$parentOnly=$false) {
+  function CheckAcl([string]$p,[string]$scope='private') {
     NoReparse $p
+    $script:reason='acl-query'
     $acl=Get-Acl -LiteralPath $p
+    $script:reason='acl-parse'
     $raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0)
-    if($null -eq $raw.DiscretionaryAcl) {throw 'Null DACL'}
+    if($null -eq $raw.DiscretionaryAcl) {Fail 'null-dacl'}
     $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if($trusted -notcontains $owner) {throw 'Unexpected owner'}
+    if($scope -ne 'ancestor' -and $trusted -notcontains $owner) {Fail 'unexpected-owner'}
     foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
       if($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {continue}
       $sid=$rule.IdentityReference.Value
       if($trusted -contains $sid) {continue}
       if($sid -eq 'S-1-3-0' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) {continue}
-      if(-not $parentOnly -or (([long]$rule.FileSystemRights -band $danger) -ne 0)) {throw 'Foreign access rule'}
+      if($scope -eq 'ancestor' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) {continue}
+      if($scope -eq 'private') {Fail 'foreign-access'}
+      $mask=if($scope -eq 'ancestor') {$replacement} else {$danger}
+      if(([long]$rule.FileSystemRights -band $mask) -ne 0) {Fail 'unsafe-parent'}
     }
   }
   function CheckParent([string]$p) {
     $parent=[IO.Directory]::GetParent($p)
     while($null -ne $parent -and -not (Test-Path -LiteralPath $parent.FullName)) {$parent=$parent.Parent}
-    if($null -eq $parent) {throw 'No parent'}
-    CheckAcl $parent.FullName $true
+    if($null -eq $parent) {Fail 'missing-parent'}
+    CheckAcl $parent.FullName 'parent'
+    $parent=$parent.Parent
+    while($null -ne $parent) {CheckAcl $parent.FullName 'ancestor';$parent=$parent.Parent}
   }
   function PrivateAcl([bool]$directory) {
     if($directory) {$acl=[Security.AccessControl.DirectorySecurity]::new()}
@@ -66,42 +77,50 @@ try {
   NoReparse $path
   if($r.action -eq 'directory') {
     CheckParent $path
-    if(-not (Test-Path -LiteralPath $path)) {[IO.Directory]::CreateDirectory($path,(PrivateAcl $true)) | Out-Null}
-    if(-not (Get-Item -Force -LiteralPath $path).PSIsContainer) {throw 'Directory required'}
+    if(-not (Test-Path -LiteralPath $path)) {$script:reason='create-directory';[IO.Directory]::CreateDirectory($path,(PrivateAcl $true)) | Out-Null}
+    if(-not (Get-Item -Force -LiteralPath $path).PSIsContainer) {Fail 'not-directory'}
     CheckAcl $path
   } elseif($r.action -eq 'file') {
     $parent=[IO.Path]::GetDirectoryName($path)
     CheckParent $parent;CheckAcl $parent
-    if((Get-Item -Force -LiteralPath $path).PSIsContainer) {throw 'File required'}
+    if((Get-Item -Force -LiteralPath $path).PSIsContainer) {Fail 'not-file'}
     CheckAcl $path
   } elseif($r.action -eq 'protect') {
     CheckParent $path
     foreach($entry in $r.entries) {NoReparse ([string]$entry)}
     foreach($entry in $r.entries) {
+      $script:reason='protect-state'
       $item=Get-Item -Force -LiteralPath ([string]$entry)
       Set-Acl -LiteralPath $item.FullName -AclObject (PrivateAcl $item.PSIsContainer)
     }
     foreach($entry in $r.entries) {CheckAcl ([string]$entry)}
   } else {throw 'Invalid operation'}
   [Console]::Out.Write('{"ok":true}')
-} catch {[Console]::Out.Write('{"ok":false}');exit 1}
+} catch {[Console]::Out.Write((@{ok=$false;reason=$script:reason} | ConvertTo-Json -Compress));exit 1}
 `;
 
 function windowsAcl(action: 'directory'|'file'|'protect', path: string, entries?: string[]): void {
   for(let cursor=resolve(path);;cursor=dirname(cursor)) {
-    try {if(lstatSync(cursor).isSymbolicLink()) throw unavailable();}
+    try {if(lstatSync(cursor).isSymbolicLink()) throw unavailable('reparse-path');}
     catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error;}
     if(cursor===dirname(cursor)) break;
   }
   const systemRoot=process.env.SystemRoot;
-  if(!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot)) throw unavailable();
+  if(!systemRoot || !/^[a-z]:[\\/]/i.test(systemRoot)) throw unavailable('helper-unavailable');
   const executable=join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe');
+  // A parent pwsh process can pass its incompatible module directory to 5.1.
+  // Also exclude user/workspace modules from this security-sensitive subprocess.
+  const environment=Object.fromEntries(Object.entries(process.env).filter(([name])=>name.toLowerCase()!=='psmodulepath'));
+  environment.PSModulePath=join(dirname(executable),'Modules');
   const result=spawnSync(executable,['-NoProfile','-NonInteractive','-Command',aclScript],{
-    input:JSON.stringify({action,path,entries}),encoding:'utf8',windowsHide:true,timeout:20000,maxBuffer:64*1024,
+    input:JSON.stringify({action,path,entries}),env:environment,encoding:'utf8',windowsHide:true,timeout:20000,maxBuffer:64*1024,
   });
-  if(result.error || result.status!==0) throw unavailable();
-  try {if(JSON.parse(result.stdout.replace(/^\uFEFF/,'')).ok!==true) throw unavailable();}
-  catch {throw unavailable();}
+  if(result.error) throw unavailable((result.error as NodeJS.ErrnoException).code==='ETIMEDOUT'?'helper-timeout':'helper-unavailable');
+  let response:{ok?:boolean;reason?:string};
+  try {response=JSON.parse(result.stdout.replace(/^\uFEFF/,''));}
+  catch {throw unavailable('helper-response');}
+  if(!response || typeof response!=='object') throw unavailable('helper-response');
+  if(result.status!==0 || response.ok!==true) throw unavailable(response.reason);
 }
 
 /** Create app-owned state privately; existing storage must already be private. */

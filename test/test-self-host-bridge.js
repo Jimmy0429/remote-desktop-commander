@@ -234,3 +234,80 @@ test('bridge bounds HTTP responses and shuts down on stdin EOF without protocol 
   assert.match(stderr, /BRIDGE_CLOSED:0/);
   assert.ok(!stderr.includes(f.ownerToken));
 });
+
+test('Windows desktop launch initializes a detached CLI bridge over pipes and exits on EOF', {
+  skip: process.platform !== 'win32', timeout: 45000,
+}, async t => {
+  const f = await fixture(t);
+  const server = await createControlServer({ dataDir: join(f.base, 'detached-server'), ownerToken: f.ownerToken, port: 0 });
+  f.cleanup.push(() => server.close());
+  // The SDK sets windowsHide but cannot request detached. Use native spawn to
+  // exercise the desktop launch condition without an inherited console.
+  const child = spawn(process.execPath, [
+    fileURLToPath(new URL('../dist/self-host/cli.js', import.meta.url)),
+    'bridge', '--server', server.url, '--token-file', f.tokenFile,
+  ], { detached: true, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], cwd: f.workspace });
+  const closed = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  // Observe rejection immediately even if spawn fails before the first request.
+  void closed.catch(() => {});
+  f.cleanup.push(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await closed.catch(() => {});
+  });
+  let stderr = '';
+  let partial = '';
+  let stdoutBytes = 0;
+  let protocolFailure;
+  const messages = [];
+  child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+  child.stdin.on('error', () => { protocolFailure = 'Detached bridge closed stdin before completing the protocol.'; });
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', chunk => {
+    stdoutBytes += Buffer.byteLength(chunk);
+    if (stdoutBytes > MAX_MESSAGE_BYTES) { protocolFailure = 'Detached bridge stdout exceeded its bound.'; child.kill(); return; }
+    partial += chunk;
+    let newline;
+    while ((newline = partial.indexOf('\n')) !== -1) {
+      const line = partial.slice(0, newline);
+      partial = partial.slice(newline + 1);
+      try {
+        const message = JSON.parse(line);
+        if (message.jsonrpc !== '2.0') throw new Error();
+        messages.push(message);
+      } catch { protocolFailure = 'Detached bridge wrote non-protocol text to stdout.'; }
+    }
+  });
+  const send = message => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
+  const reply = async id => {
+    const deadline = Date.now() + 15000;
+    while (!messages.some(message => message.id === id)) {
+      assert.equal(protocolFailure, undefined);
+      assert.ok(child.exitCode === null && child.signalCode === null, 'Detached bridge exited before replying.');
+      assert.ok(Date.now() < deadline, 'Detached bridge did not reply within its deadline.');
+      await delay(20);
+    }
+    const message = messages.find(candidate => candidate.id === id);
+    assert.equal(message.error, undefined, 'Detached bridge returned an MCP error.');
+    return message.result;
+  };
+  send({ id: 1, method: 'initialize', params: {
+    protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'windows-detached-probe', version: '1' },
+  } });
+  assert.ok((await reply(1)).capabilities.tools);
+  send({ method: 'notifications/initialized' });
+  send({ id: 2, method: 'tools/list', params: {} });
+  const catalog = await reply(2);
+  assert.ok(catalog.tools.some(tool => tool.name === 'read_file' && tool.inputSchema.required.includes('deviceId')));
+  send({ id: 3, method: 'tools/call', params: { name: 'list_devices', arguments: {} } });
+  assert.deepEqual((await reply(3)).structuredContent.devices, []);
+  child.stdin.end();
+  const exit = await Promise.race([closed, delay(5000).then(() => { throw new Error('Detached bridge did not exit after EOF.'); })]);
+  assert.deepEqual(exit, { code: 0, signal: null });
+  assert.equal(protocolFailure, undefined);
+  assert.equal(partial, '');
+  assert.deepEqual(messages.map(message => message.id), [1, 2, 3], 'Initialized notification must not receive a reply.');
+  assert.ok(!stderr.includes(f.ownerToken), 'Detached launch must not expose its credential.');
+});
