@@ -85,8 +85,18 @@ async function connectBridge(t, f, serverUrl, { allowFailure = false, useCli = f
   const errors = [];
   client.onerror = error => errors.push(error);
   f.cleanup.push(() => client.close());
-  const connected = bridgePhase(t, useCli ? 'CLI MCP initialization' : 'fixture MCP initialization', () =>
-    client.connect(transport, { timeout: BRIDGE_STARTUP_TIMEOUT_MS }));
+  const connected = bridgePhase(t, useCli ? 'CLI MCP initialization' : 'fixture MCP initialization', async () => {
+    try {
+      await client.connect(transport, { timeout: BRIDGE_STARTUP_TIMEOUT_MS });
+    } catch (error) {
+      // Print only recognized reason codes, never raw child stderr. In
+      // particular this distinguishes pre-MCP Windows ACL helper timeouts from
+      // the bridge's later HTTP connection or protocol failures.
+      const reason = /\[(helper-unavailable|helper-timeout|helper-response|helper-runtime|acl-query|acl-parse|null-dacl|unexpected-owner|foreign-access|unsafe-parent|reparse-path|nonlocal-filesystem|missing-parent|not-directory|not-file|create-directory|protect-state|permissions)\]/.exec(stderr)?.[1];
+      t.diagnostic(`Bridge startup child diagnostic: ${reason ? 'private-storage/' + reason : stderr.includes('Unable to connect to the private MCP server') ? 'remote-connection-failed' : stderr ? 'unclassified' : 'no-stderr'}`);
+      throw error;
+    }
+  });
   if (allowFailure) await connected.catch(() => {});
   else await connected;
   return { client, transport, errors, stderr: () => stderr };
