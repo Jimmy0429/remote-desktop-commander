@@ -72,10 +72,29 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const saved = JSON.parse(privateRead(credentialFile));
     if (!saved || typeof saved.serverUrl !== 'string' || typeof saved.deviceToken !== 'string') throw new Error('Invalid device credential file.');
     if (!values.workspace) throw new Error('Choose --workspace DIR for the device tool engine.');
-    const agent = await startAgent({ serverUrl: saved.serverUrl, deviceToken: saved.deviceToken,
-      workspace: resolve(values.workspace), stateDir: resolve(values['state-dir'] || join(dirname(credentialFile), 'engine')) });
-    console.log('Device connected. Keep this process running; press Ctrl+C to disconnect.');
-    waitForStop(agent.close); return;
+    const controller=new AbortController();
+    const stop=()=>controller.abort();
+    // Cancellation must work while the first server connection is still retrying.
+    process.once('SIGINT',stop);process.once('SIGTERM',stop);
+    try {
+      const agent = await startAgent({ serverUrl: saved.serverUrl, deviceToken: saved.deviceToken,
+        workspace: resolve(values.workspace), stateDir: resolve(values['state-dir'] || join(dirname(credentialFile), 'engine')),
+        signal:controller.signal,
+        onStatus:status=>{
+          if(status.state==='connected') console.log(status.message);
+          else if(status.state==='retrying') console.error(`${status.message} Next attempt in ${((status.retryDelayMs||0)/1000).toFixed(1)} seconds. Press Ctrl+C to stop.`);
+        },
+      });
+      const exit=await agent.closed;
+      if(exit.exitCode!==0) console.error(exit.message);
+      process.exitCode=exit.exitCode;
+    } catch(error) {
+      if(controller.signal.aborted && error instanceof Error && error.name==='AbortError') process.exitCode=0;
+      else throw error;
+    } finally {
+      process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop);
+    }
+    return;
   }
   if (!values.server) throw new Error('--server URL is required.');
   const serverUrl = safeRemoteUrl(values.server).origin;

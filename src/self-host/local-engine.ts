@@ -4,9 +4,12 @@ import { CallToolResultSchema, type CallToolResult, type Tool } from '@modelcont
 import { mkdir, realpath, stat, chmod } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { MAX_MESSAGE_BYTES, REMOTE_TOOL_NAMES } from './protocol.js';
+import { MAX_MESSAGE_BYTES, REMOTE_TOOL_NAMES, ENGINE_CALL_TIMEOUT_MS } from './protocol.js';
 
 export interface EngineOptions { stateDir:string; workspace:string; }
+export class EngineCallError extends Error {
+  constructor(message:string, public readonly execution:'not_started'|'completed') { super(message); this.name='EngineCallError'; }
+}
 
 /** Each device owns one upstream stdio process; no upstream globals enter the relay. */
 export class LocalEngine {
@@ -37,7 +40,9 @@ export class LocalEngine {
     // Keep the real user home; only the fork's own configuration is redirected.
     const transport = new StdioClientTransport({
       command:process.execPath,args:[fileURLToPath(new URL('../index.js',import.meta.url)),'--no-onboarding'],
-      cwd:workspace,stderr:'pipe',maxBufferSize:MAX_MESSAGE_BYTES,
+      // ReadBuffer checks an entire pipe chunk before extracting complete lines.
+      // Leave headroom for a bounded response coalesced with the next message.
+      cwd:workspace,stderr:'pipe',maxBufferSize:2*MAX_MESSAGE_BYTES,
       env:{...environment,JRC_CONFIG_DIR:stateDir,JRC_WORKSPACE:workspace,JRC_SELF_HOSTED:'1',
         DESKTOP_COMMANDER_DISABLE_TELEMETRY:'1',DC_REMOTE_DEVICE:'true'},
     });
@@ -66,10 +71,10 @@ export class LocalEngine {
     }
   }
   async call(name:string,args:Record<string,unknown>):Promise<CallToolResult> {
-    if(!this.client || !this.tools || this.closed) throw new Error('Local engine is not running');
-    if(!this.tools.some(tool=>tool.name===name)) throw new Error('Tool is not allowed');
-    const result=await this.client.callTool({name,arguments:args,_meta:{remote:true}},CallToolResultSchema,{timeout:30*60_000});
-    if(Buffer.byteLength(JSON.stringify(result),'utf8')>MAX_MESSAGE_BYTES-1024) throw new Error('Tool result exceeds message limit');
+    if(!this.client || !this.tools || this.closed) throw new EngineCallError('Local engine is not running; the call was not started.','not_started');
+    if(!this.tools.some(tool=>tool.name===name)) throw new EngineCallError('Tool is not allowed; the call was not started.','not_started');
+    const result=await this.client.callTool({name,arguments:args,_meta:{remote:true}},CallToolResultSchema,{timeout:ENGINE_CALL_TIMEOUT_MS});
+    if(Buffer.byteLength(JSON.stringify(result),'utf8')>MAX_MESSAGE_BYTES-1024) throw new EngineCallError('The operation completed, but its result exceeds the message limit. Request a smaller output; do not repeat a write or command solely to recover its output.','completed');
     return CallToolResultSchema.parse(result);
   }
   close():Promise<void> {

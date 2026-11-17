@@ -13,7 +13,7 @@
   "bugs": "https://github.com/Jimmy0429/remote-desktop-commander/issues",
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "bin": {
     "desktop-commander": "dist/index.js",

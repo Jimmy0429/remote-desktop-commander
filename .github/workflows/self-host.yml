@@ -92,10 +92,10 @@ jobs:
           container="jrc-smoke-${JRC_SMOKE_ID}"
           smoke_script="${RUNNER_TEMP}/jrc-docker-smoke-${JRC_SMOKE_ID}.mjs"
           cleanup() {
-            docker rm -f "$container" "${container}-init" >/dev/null 2>&1 || true
+            docker rm -f "$container" "${container}-init" "${container}-contender" >/dev/null 2>&1 || true
             docker volume rm "$volume" >/dev/null 2>&1 || true
             docker image rm "$image" >/dev/null 2>&1 || true
-            rm -f "$smoke_script"
+            rm -f "$smoke_script" "${smoke_script}.contender-log"
           }
           trap cleanup EXIT
           trap 'exit 130' INT
@@ -196,10 +196,26 @@ jobs:
           }
           start_container
           docker exec --interactive "$container" node --input-type=module - initial < "$smoke_script"
+          # A second process sharing the local named volume must not become a writer.
+          if docker run --rm --name "${container}-contender" --network none \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=volume,source=${volume},target=/data" \
+            "$image" serve --data-dir /data > "${smoke_script}.contender-log" 2>&1; then
+            printf '%s\n' 'A competing server unexpectedly acquired the data directory.'
+            exit 1
+          fi
+          grep -q 'locked' "${smoke_script}.contender-log"
           docker stop --time 15 "$container" >/dev/null
           test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
           docker rm "$container" >/dev/null
           start_container
           docker exec --interactive "$container" node --input-type=module - restarted < "$smoke_script"
+          # Kernel locks must recover after a crash without deleting lock/state files.
+          docker kill --signal KILL "$container" >/dev/null
+          test "$(docker wait "$container")" = 137
+          docker rm "$container" >/dev/null
+          start_container
+          docker exec --interactive "$container" node --input-type=module - after-crash < "$smoke_script"
           docker stop --time 15 "$container" >/dev/null
           test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0

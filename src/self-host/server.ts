@@ -1,7 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, openSync, closeSync, unlinkSync, writeFileSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { DeviceRegistry } from './registry.js';
@@ -9,6 +9,7 @@ import { Relay } from './relay.js';
 import { createMcpServer } from './mcp.js';
 import { MAX_MESSAGE_BYTES, safeRemoteUrl } from './protocol.js';
 import { dashboardHtml } from './dashboard.js';
+import { acquireServerLock } from './server-lock.js';
 
 export interface ControlServerOptions {
   dataDir: string; ownerToken: string; publicUrl?: string; host?: string; port?: number;
@@ -50,10 +51,7 @@ export async function createControlServer(options: ControlServerOptions): Promis
   const publicUrl = options.publicUrl ? safeRemoteUrl(options.publicUrl) : undefined;
   if (!isLoopback && publicUrl?.protocol !== 'https:') throw new Error('Non-loopback binding requires an HTTPS public URL and a TLS reverse proxy.');
   const dataDir = resolve(options.dataDir); mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  const lockPath = join(dataDir, 'server.lock');
-  let lock: number;
-  try { lock = openSync(lockPath, 'wx', 0o600); writeFileSync(lock, String(process.pid)); }
-  catch { throw new Error('Server data directory is locked. Stop the other server; after a crash, remove server.lock only after confirming it is no longer running.'); }
+  const release = acquireServerLock(dataDir);
   let registry: DeviceRegistry;
   try {
     registry = DeviceRegistry.open(dataDir);
@@ -63,7 +61,7 @@ export async function createControlServer(options: ControlServerOptions): Promis
       registry.audit({ ...record, status: 'unknown', finishedAt, durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(record.startedAt)) });
     }
   }
-  catch (e) { closeSync(lock); unlinkSync(lockPath); throw e; }
+  catch (e) { release(); throw e; }
   const ownerHash = digest(options.ownerToken);
   const relay = new Relay(registry, options.callTimeoutMs, options.waitMs);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
@@ -79,9 +77,12 @@ export async function createControlServer(options: ControlServerOptions): Promis
     if (closing) throw new HttpError(503, 'Server shutting down.');
     const expected = new URL(url);
     const allowedHosts = new Set([expected.host]);
-    if (!publicUrl && isLoopback) for (const h of ['127.0.0.1', 'localhost', '[::1]']) allowedHosts.add(`${h}:${expected.port}`);
-    if (!req.headers.host || !allowedHosts.has(req.headers.host.toLowerCase())) throw new HttpError(403, 'Unrecognized host.');
-    if (req.headers.origin && req.headers.origin !== expected.origin) throw new HttpError(403, 'Unrecognized browser origin.');
+    const localAliases = !publicUrl && isLoopback;
+    if (localAliases) for (const h of ['127.0.0.1', 'localhost', '[::1]']) allowedHosts.add(`${h}${expected.port ? `:${expected.port}` : ''}`);
+    const requestHost = req.headers.host?.toLowerCase();
+    if (!requestHost || !allowedHosts.has(requestHost)) throw new HttpError(403, 'Unrecognized host.');
+    const allowedOrigin = localAliases ? `${expected.protocol}//${requestHost}` : expected.origin;
+    if (req.headers.origin && req.headers.origin !== allowedOrigin) throw new HttpError(403, 'Unrecognized browser origin.');
     if (req.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, 'Cross-site requests are not allowed.');
     const requestUrl = new URL(req.url || '/', expected);
     if (requestUrl.search || requestUrl.hash) throw new HttpError(400, 'Query parameters are not accepted.');
@@ -151,9 +152,14 @@ export async function createControlServer(options: ControlServerOptions): Promis
       else if (!res.writableEnded) res.end();
     } finally { active--; }
   });
+  // Keep the database lock strongly reachable even if a caller drops our handle.
+  // Normal shutdown closes the relay and WebSockets before closing HTTP.
+  server.once('close', release);
   server.maxConnections = 256;
   server.setTimeout(20_000, socket => socket.destroy());
   server.on('upgrade', (req, socket, head) => {
+    // Upgrade sockets no longer have the HTTP server's error/lifecycle handling.
+    socket.on('error', () => socket.destroy());
     try {
       if (boundary(req).pathname !== '/agent') throw new HttpError(404, 'Not found.');
       if (wss.clients.size >= 256) throw new HttpError(503, 'Too many connections.');
@@ -163,10 +169,12 @@ export async function createControlServer(options: ControlServerOptions): Promis
       wss.handleUpgrade(req, socket, head, ws => relay.attach(device.id, ws));
     } catch (e) {
       const status = e instanceof HttpError ? e.status : 400;
-      socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+      const rejectionTimer = setTimeout(() => socket.destroy(), 1000);
+      rejectionTimer.unref();
+      socket.once('close', () => clearTimeout(rejectionTimer));
+      socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () => socket.destroy());
     }
   });
-  const release = () => { closeSync(lock); unlinkSync(lockPath); };
   try {
     await new Promise<void>((done, reject) => {
       server.once('error', reject);

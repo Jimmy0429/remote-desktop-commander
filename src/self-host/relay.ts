@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 import type WebSocket from 'ws';
 import type { DeviceRegistry } from './registry.js';
-import { parseAgentMessage, MAX_MESSAGE_BYTES, REMOTE_TOOL_NAMES } from './protocol.js';
+import { parseAgentMessage, MAX_MESSAGE_BYTES, REMOTE_TOOL_NAMES, AGENT_CLOSE_CODES, REMOTE_CALL_TIMEOUT_MS } from './protocol.js';
+import { canonicalToolCatalog } from './catalog.js';
 
 // Policy is owned by the operator, not remotely mutable through the AI tools.
 export const REMOTE_TOOLS = new Set<string>(REMOTE_TOOL_NAMES);
@@ -10,11 +11,11 @@ export const REMOTE_TOOLS = new Set<string>(REMOTE_TOOL_NAMES);
 type Status = 'running' | 'completed' | 'failed' | 'unknown';
 interface Connection {
   socket: WebSocket; generation: string; ready: boolean; alive: boolean;
-  tools: Tool[]; readyTimer: NodeJS.Timeout;
+  tools: Set<string>; readyTimer: NodeJS.Timeout;
 }
 interface RemoteCall {
   id: string; deviceId: string; generation: string; tool: string; status: Status;
-  startedAt: string; finishedAt?: string; result?: CallToolResult;
+  startedAt: string; finishedAt?: string; result?: CallToolResult; resultBytes?: number;
   done: Promise<void>; resolve: () => void; timer: NodeJS.Timeout;
 }
 
@@ -27,7 +28,7 @@ export class Relay {
   private sweep: NodeJS.Timeout;
   private closed = false;
 
-  constructor(private registry: DeviceRegistry, private timeoutMs = 120_000, private waitMs = 3000) {
+  constructor(private registry: DeviceRegistry, private timeoutMs = REMOTE_CALL_TIMEOUT_MS, private waitMs = 3000) {
     this.heartbeat = setInterval(() => {
       for (const c of this.connections.values()) {
         if (!c.alive) { c.socket.terminate(); continue; }
@@ -40,8 +41,8 @@ export class Relay {
 
   attach(deviceId: string, socket: WebSocket): void {
     if (this.closed) { socket.terminate(); return; }
-    this.disconnect(deviceId, 'Device reconnected; execution outcome is unknown.');
-    const c: Connection = { socket, generation: randomUUID(), ready: false, alive: true, tools: [],
+    this.disconnect(deviceId, 'Device reconnected; execution outcome is unknown.', AGENT_CLOSE_CODES.REPLACED);
+    const c: Connection = { socket, generation: randomUUID(), ready: false, alive: true, tools: new Set(),
       readyTimer: setTimeout(() => socket.terminate(), 10_000) };
     this.connections.set(deviceId, c);
     socket.on('pong', () => { c.alive = true; });
@@ -52,19 +53,22 @@ export class Relay {
         const message = parseAgentMessage(raw.toString());
         if (message.type === 'ready') {
           if (c.ready) throw new Error('Duplicate readiness');
-          c.tools = message.tools.filter(t => REMOTE_TOOLS.has(t.name)).map(t => {
-            const { _meta, ...tool } = t;
-            return tool;
-          });
-          if (!c.tools.length) throw new Error('No supported tools');
+          c.tools = new Set(message.tools.filter(t => REMOTE_TOOLS.has(t.name)).map(t => t.name));
+          if (!c.tools.size) throw new Error('No supported tools');
           c.ready = true; clearTimeout(c.readyTimer);
           return;
         }
         if (!c.ready) throw new Error('Device is not ready');
         const call = this.calls.get(message.id);
         if (!call || call.deviceId !== deviceId || call.generation !== c.generation || call.status !== 'running') return;
+        // A duplicate delivery says nothing about the original execution with this ID.
+        if (message.type === 'error' && message.code === 'duplicate_call') return;
         if (message.type === 'result') this.finish(call, message.result.isError ? 'failed' : 'completed', message.result);
-        else this.finish(call, 'unknown', errorResult('Device could not confirm the result. Do not automatically retry; the operation may have executed.'));
+        else if (message.execution === 'not_started' || message.execution === 'completed') {
+          const guidance = message.execution === 'not_started' ? 'The operation was not started.'
+            : 'The operation completed, but its result could not be delivered. Do not repeat a side effect solely to recover output.';
+          this.finish(call, 'failed', { ...errorResult(`${message.message} ${guidance}`), structuredContent: { execution: message.execution } });
+        } else this.finish(call, 'unknown', errorResult('Device could not confirm the result. Do not automatically retry; the operation may have executed.'));
       } catch { socket.close(1008, 'Invalid protocol message'); }
     });
     socket.on('error', () => { socket.terminate(); });
@@ -77,34 +81,25 @@ export class Relay {
   devices() { return this.registry.list().map(d => ({ ...d, online: !d.revokedAt && !!this.connections.get(d.id)?.ready })); }
 
   catalog(): Tool[] {
-    const catalog = new Map<string, Tool>();
-    for (const c of this.connections.values()) if (c.ready) {
-      for (const tool of c.tools) if (!catalog.has(tool.name)) catalog.set(tool.name, {
+    return canonicalToolCatalog().map(tool => ({
         ...tool,
         description: `${tool.description || tool.name}\nRuns on the device selected by deviceId.`,
         inputSchema: { ...tool.inputSchema, properties: {
           ...tool.inputSchema.properties,
           deviceId: { type: 'string', description: 'ID from list_devices. Select the intended computer explicitly.' },
         }, required: [...new Set([...(tool.inputSchema.required || []), 'deviceId'])] },
-      });
-    }
-    return [...catalog.values()];
+      }));
   }
 
   async call(tool: string, args: Record<string, unknown>): Promise<CallToolResult> {
     if (this.closed) throw new Error('Server is shutting down.');
     this.prune();
     if (!REMOTE_TOOLS.has(tool)) throw new Error('This tool is not available remotely.');
-    let deviceId = args.deviceId;
-    if (deviceId === undefined) {
-      const online = this.devices().filter(d => d.online);
-      if (online.length !== 1) throw new Error('Select deviceId explicitly using list_devices; no unique online device.');
-      deviceId = online[0].id;
-    }
-    if (typeof deviceId !== 'string') throw new Error('deviceId must be a string.');
+    const deviceId = args.deviceId;
+    if (typeof deviceId !== 'string' || !deviceId) throw new Error('Select deviceId explicitly using list_devices, even when only one computer is online.');
     const connection = this.connections.get(deviceId);
     if (!connection?.ready || this.registry.list().find(d => d.id === deviceId)?.revokedAt) throw new Error('Selected device is offline or revoked.');
-    if (!connection.tools.some(t => t.name === tool)) throw new Error('Selected device does not support this tool.');
+    if (!connection.tools.has(tool)) throw new Error('Selected device does not support this tool.');
     const running = [...this.calls.values()].filter(c => c.status === 'running');
     if (running.length >= 32 || running.filter(c => c.deviceId === deviceId).length >= 8) throw new Error('Too many active calls; wait for existing calls to complete.');
     const { deviceId: _deviceId, ...forwarded } = args;
@@ -137,11 +132,16 @@ export class Relay {
     return this.snapshot(call);
   }
 
-  disconnect(deviceId: string, reason = 'Device access revoked; execution outcome is unknown.'): void {
+  disconnect(deviceId: string, reason = 'Device access revoked; execution outcome is unknown.', closeCode: number = AGENT_CLOSE_CODES.REVOKED): void {
     const c = this.connections.get(deviceId);
     if (!c) return;
     this.connections.delete(deviceId); clearTimeout(c.readyTimer);
-    c.socket.close(1000, 'Disconnected'); c.socket.terminate();
+    // Deliver the reason before forcing cleanup, so replaced agents stop reconnecting.
+    const terminate = setTimeout(() => c.socket.terminate(), 1000);
+    terminate.unref();
+    c.socket.once('close', () => clearTimeout(terminate));
+    c.socket.close(closeCode, closeCode === AGENT_CLOSE_CODES.REPLACED ? 'Device connection replaced'
+      : closeCode === AGENT_CLOSE_CODES.REVOKED ? 'Device access revoked' : 'Server stopped');
     for (const call of this.calls.values()) if (call.deviceId === deviceId && call.generation === c.generation && call.status === 'running') {
       this.finish(call, 'unknown', errorResult(`${reason} Do not automatically retry.`));
     }
@@ -150,15 +150,18 @@ export class Relay {
   close(): void {
     if (this.closed) return;
     this.closed = true; clearInterval(this.heartbeat); clearInterval(this.sweep);
-    for (const id of [...this.connections.keys()]) this.disconnect(id, 'Server stopped; execution outcome is unknown.');
+    for (const id of [...this.connections.keys()]) this.disconnect(id, 'Server stopped; execution outcome is unknown.', 1001);
   }
 
   private snapshot(c: RemoteCall): CallToolResult {
+    const executed = c.status === 'failed' && c.result?.structuredContent?.execution === 'completed';
     return {
       ...(c.status === 'failed' || c.status === 'unknown' ? { isError: true } : {}),
       content: [{ type: 'text', text: c.status === 'running'
         ? `Call ${c.id} is still running. Use get_remote_call; do not submit the operation again.`
-        : c.status === 'unknown' ? `Call ${c.id}: execution outcome is unknown. Do not automatically retry.` : `Call ${c.id}: ${c.status}. Result is in structuredContent.result.` }],
+        : c.status === 'unknown' ? `Call ${c.id}: execution outcome is unknown. Do not automatically retry.`
+        : executed ? `Call ${c.id} executed, but its result is unavailable. Do not repeat the operation to recover output. Details are in structuredContent.result.`
+        : `Call ${c.id}: ${c.status}. Result is in structuredContent.result.` }],
       structuredContent: { callId: c.id, deviceId: c.deviceId, tool: c.tool, status: c.status, ...(c.result ? { result: c.result } : {}) },
     };
   }
@@ -166,6 +169,7 @@ export class Relay {
   private finish(call: RemoteCall, status: Status, result: CallToolResult): void {
     if (call.status !== 'running') return;
     clearTimeout(call.timer); call.status = status; call.finishedAt = new Date().toISOString(); call.result = result;
+    call.resultBytes = Buffer.byteLength(JSON.stringify(result));
     try { this.audit(call); } catch { /* Do not lose a completed result because durable metadata failed. */ }
     call.resolve(); this.prune();
   }
@@ -180,7 +184,7 @@ export class Relay {
     const entries = [...this.calls.values()].reverse();
     for (const c of entries) {
       if (c.status === 'running') continue;
-      bytes += c.result ? Buffer.byteLength(JSON.stringify(c.result)) : 0; retained++;
+      bytes += c.resultBytes ?? 0; retained++;
       if (now - Date.parse(c.finishedAt!) > 600_000 || retained > 200 || bytes > 64 * 1024 * 1024) this.calls.delete(c.id);
     }
   }

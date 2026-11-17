@@ -2,6 +2,9 @@ import { z } from 'zod/v4';
 import { CallToolResultSchema, ToolSchema, type Tool, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 export const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
+export const AGENT_CLOSE_CODES = { REPLACED: 4009, REVOKED: 4003 } as const;
+export const ENGINE_CALL_TIMEOUT_MS = 30 * 60_000;
+export const REMOTE_CALL_TIMEOUT_MS = ENGINE_CALL_TIMEOUT_MS + 60_000;
 export const REMOTE_TOOL_NAMES = [
   'read_file','read_multiple_files','write_file','write_pdf','create_directory','list_directory',
   'move_file','get_file_info','edit_block','start_search','get_more_search_results','stop_search',
@@ -15,9 +18,9 @@ const serverSchema = z.object({type:z.literal('call'),id,name:toolName,arguments
 const agentSchema = z.discriminatedUnion('type', [
   z.object({type:z.literal('ready'),tools:z.array(ToolSchema).max(128)}).strict(),
   z.object({type:z.literal('result'),id,result:CallToolResultSchema}).strict(),
-  z.object({type:z.literal('error'),id,message:z.string().min(1).max(2048)}).strict(),
+  z.object({type:z.literal('error'),id,message:z.string().min(1).max(2048),execution:z.enum(['not_started','completed','unknown']).optional(),code:z.literal('duplicate_call').optional()}).strict(),
 ]);
-export type AgentMessage = {type:'ready';tools:Tool[]} | {type:'result';id:string;result:CallToolResult} | {type:'error';id:string;message:string};
+export type AgentMessage = {type:'ready';tools:Tool[]} | {type:'result';id:string;result:CallToolResult} | {type:'error';id:string;message:string;execution?:'not_started'|'completed'|'unknown';code?:'duplicate_call'};
 export type ServerMessage = {type:'call';id:string;name:string;arguments:Record<string,unknown>};
 
 function decode(value: unknown): unknown {

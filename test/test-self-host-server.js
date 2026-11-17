@@ -23,12 +23,12 @@ async function setup(t, options = {}) {
   });
   return { ...server, dataDir, ownerToken, api };
 }
-async function device(s, name = 'Test computer') {
+async function device(s, name = 'Test computer', advertisedTools) {
   const pairing = await (await s.api('/api/pairings', {})).json();
   const enrollment = await (await s.api('/api/enroll', { code: pairing.code, name, platform: 'linux' }, '')).json();
   const socket = new WebSocket(s.url.replace(/^http/, 'ws') + '/agent', { headers: { Authorization: `Bearer ${enrollment.token}` } });
   await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
-  socket.send(JSON.stringify({ type: 'ready', tools: [{ name: 'read_file', description: 'fixture read', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }] }));
+  socket.send(JSON.stringify({ type: 'ready', tools: advertisedTools ?? [{ name: 'read_file', description: 'fixture read', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }] }));
   for (let n = 0; n < 100; n++) {
     if ((await (await s.api('/api/devices')).json()).devices.find(d => d.id === enrollment.deviceId)?.online) break;
     await new Promise(r => setTimeout(r, 10));
@@ -115,4 +115,70 @@ test('disconnect gives unknown execution outcome without replay; completed resul
   assert.equal(polled.structuredContent.status, 'unknown');
   assert.equal(received.length, 1);
   assert.match(polled.content[0].text, /not.*retry|do not.*retry/i);
+});
+
+test('MCP catalog is stable offline and ignores device-supplied instructions and schemas', async t => {
+  const s = await setup(t), c = await client(s); t.after(() => c.close());
+  const before = await c.listTools();
+  assert.ok(before.tools.some(tool => tool.name === 'read_file'));
+  await device(s, 'Untrusted metadata', [{ name: 'read_file', description: 'INJECTED-INSTRUCTION',
+    inputSchema: { type: 'object', properties: { injectedArgument: { type: 'string' } } },
+    annotations: { readOnlyHint: false } }]);
+  const after = await c.listTools();
+  assert.deepEqual(after, before);
+  assert.ok(!JSON.stringify(after).includes('INJECTED-INSTRUCTION'));
+  assert.ok(!JSON.stringify(after).includes('injectedArgument'));
+});
+
+test('even a single online device requires an explicit target', async t => {
+  const s = await setup(t), d = await device(s), c = await client(s); t.after(() => c.close());
+  const received = [];
+  d.socket.on('message', raw => {
+    const call = JSON.parse(raw); received.push(call);
+    d.socket.send(JSON.stringify({ type: 'result', id: call.id, result: { content: [{ type: 'text', text: 'wrong target' }] } }));
+  });
+  const reply = await c.callTool({ name: 'read_file', arguments: { path: 'fixture' } });
+  assert.equal(reply.isError, true);
+  assert.match(reply.content[0].text, /deviceId/);
+  assert.equal(received.length, 0);
+});
+
+test('known device failures retain execution state and reason while uncertain errors stay unknown', async t => {
+  const s = await setup(t, { waitMs: 1 }), d = await device(s), c = await client(s); t.after(() => c.close());
+  for (const execution of ['not_started', 'completed', 'unknown']) {
+    const pending = await c.callTool({ name: 'read_file', arguments: { deviceId: d.deviceId, path: 'fixture' } });
+    const callId = pending.structuredContent.callId;
+    d.socket.send(JSON.stringify({ type: 'error', id: callId, execution, message: `Fixture reason: ${execution}` }));
+    let reply;
+    for (let n = 0; n < 100; n++) {
+      reply = await c.callTool({ name: 'get_remote_call', arguments: { callId } });
+      if (reply.structuredContent.status !== 'running') break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(reply.structuredContent.status, execution === 'unknown' ? 'unknown' : 'failed');
+    if (execution !== 'unknown') {
+      assert.equal(reply.structuredContent.result.structuredContent.execution, execution);
+      assert.match(reply.structuredContent.result.content[0].text, /Fixture reason/);
+      if (execution === 'completed') assert.match(reply.content[0].text, /executed.*Do not repeat/);
+    }
+  }
+});
+
+test('duplicate refusal leaves the original call pending until its real result arrives', async t => {
+  const s = await setup(t, { waitMs: 1 }), d = await device(s), c = await client(s); t.after(() => c.close());
+  const pending = await c.callTool({ name: 'read_file', arguments: { deviceId: d.deviceId, path: 'fixture' } });
+  const callId = pending.structuredContent.callId;
+  d.socket.send(JSON.stringify({ type: 'error', id: callId, execution: 'unknown', code: 'duplicate_call', message: 'Duplicate refused' }));
+  await new Promise((resolve, reject) => { d.socket.once('pong', resolve); d.socket.ping('processed', error => { if (error) reject(error); }); });
+  const stillPending = await c.callTool({ name: 'get_remote_call', arguments: { callId } });
+  assert.equal(stillPending.structuredContent.status, 'running');
+  d.socket.send(JSON.stringify({ type: 'result', id: callId, result: { content: [{ type: 'text', text: 'original result' }] } }));
+  let reply;
+  for (let n = 0; n < 100; n++) {
+    reply = await c.callTool({ name: 'get_remote_call', arguments: { callId } });
+    if (reply.structuredContent.status !== 'running') break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(reply.structuredContent.status, 'completed');
+  assert.equal(reply.structuredContent.result.content[0].text, 'original result');
 });

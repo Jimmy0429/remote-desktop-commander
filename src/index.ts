@@ -19,6 +19,7 @@ import { preloadFileSupport } from './utils/files/index.js';
 import { terminalManager } from './terminal-manager.js';
 import { searchManager } from './search-manager.js';
 import { toolHistory } from './utils/toolHistory.js';
+import { MAX_MESSAGE_BYTES } from './self-host/protocol.js';
 
 // Store messages to defer until after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -57,7 +58,7 @@ async function runServer() {
 
     // Create transport FIRST so all logging gets properly buffered
     // This must happen before any code that might use logger.*
-    const transport = new FilteredStdioServerTransport();
+    const transport = new FilteredStdioServerTransport(process.env.JRC_SELF_HOSTED === '1' ? MAX_MESSAGE_BYTES - 1024 : undefined);
 
     // Export transport for use throughout the application
     global.mcpTransport = transport;
