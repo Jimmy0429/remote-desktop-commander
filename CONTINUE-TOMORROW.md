@@ -2,6 +2,8 @@
 
 The owner paused **installation**, not approval to build: a different Windows computer will be available tomorrow. Do not install onto either previously listed Avtec computer. No target Windows PC or permanent host has been selected, and no public service has been deployed.
 
+Verified source: **`49c70fd6725d9a8c3d056312576fdf2a55911839`**, branch **`feat/self-hosted-remote`**. [Qualification run](https://github.com/Jimmy0429/remote-desktop-commander/actions/runs/44042873133): Windows 81 passed/2 platform skips; Linux and macOS 73 passed/10 Windows-only skips each; Docker and Codespell passed. There were no failures. The installed Fable client also completed a disposable write/read round trip on the Mac. Later handoff-only commits preserve this tested source.
+
 ## Start here
 
 1. Read `docs/self-host-verification.md` for the final checkpoint evidence and limitations. Read `docs/self-hosted.md` for commands and credential handling.
@@ -9,7 +11,7 @@ The owner paused **installation**, not approval to build: a different Windows co
 3. Identify the owner's new Windows computer and its Windows version, architecture, available Node runtime, and intended working directory. Use normal user privileges. No UAC bypass, firewall-wide opening, or LocalSystem agent is part of this design.
 4. Decide a pilot server reachable from that PC. Recommended permanent architecture: a small always-on Linux host/VM with the included non-root container and HTTPS proxy; Windows agents make outbound connections. Existing hardware is preferable before buying hosting. The user asked for our recommendation but has not chosen or purchased a host.
 5. Build the exact verified feature-branch commit, create protected local state outside the working files, and perform one-use enrollment. Use local loopback only when server and agent are on the same computer; another computer requires the configured HTTPS origin.
-6. Connect the chosen real AI client through the private bridge or supported authenticated HTTP transport. Exercise a disposable workspace first: Unicode filenames/content, read/write/edit/move/search, PowerShell 5.1 and 7 if available, interactive output, process cleanup, disconnect/reconnect, and revocation.
+6. Connect the chosen real AI client through the private bridge or supported authenticated HTTP transport. Measure its cold startup time. Exercise a disposable workspace first: Unicode filenames/content, read/write/edit/move/search, PowerShell 5.1 and 7 if available, interactive output, process cleanup, disconnect/reconnect, and revocation. Verify Windows PDF rendering separately if needed.
 7. Only after the manual agent works, add and test an explicit per-user logon startup option if desired. It must use normal privilege, no stored password, correct battery/runtime settings, one instance, and no restart loop after revocation or replacement. It is not implemented in this checkpoint.
 
 ## What to preserve
@@ -26,5 +28,7 @@ The owner paused **installation**, not approval to build: a different Windows co
 ## Remaining product decisions
 
 See `docs/self-host-capabilities.md` for precise parity. Remaining options include independently revocable MCP client tokens, discoverable remote-call history, protocol version negotiation, a deliberate remote disconnect flow, and an operator-controlled configuration workflow. Native screenshot/mouse desktop control is not part of the current engine and must not be implied by the product name.
+
+The current dependency audit is not clean: 11 production findings (5 high, 6 moderate), and one additional development-only critical in the inherited packaging chain. Keep the pilot private and review the documented dependency and URL-download limits before public deployment. Do not silently force major dependency upgrades or call this full feature parity.
 
 The November 17 scope and task record are in `docs/superpowers/specs/2026-11-17-windows-readiness-design.md` and `docs/superpowers/plans/2026-11-17-windows-readiness.md`. Record fresh results after tomorrow's actual machine tests; CI is not proof that the owner's Windows machine is already installed or reachable.
