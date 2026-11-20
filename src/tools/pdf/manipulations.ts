@@ -5,7 +5,7 @@ import { LazyPackage } from '../../utils/lazy-package.js';
 import { normalizePageIndexes } from './utils.js';
 import { parseMarkdownToPdf } from './markdown.js';
 import type { PdfInsertOperationSchema, PdfDeleteOperationSchema, PdfOperationSchema } from '../schemas.js';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 
 // Use createRequire to load pdf-lib as CJS (works around Node 25 ESM resolution issues)
 const require = createRequire(import.meta.url);

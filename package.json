@@ -1,24 +1,28 @@
 {
-  "name": "@wonderwhy-er/desktop-commander",
-  "version": "0.3.3",
-  "description": "MCP server for terminal operations and file editing",
-  "mcpName": "io.github.wonderwhy-er/desktop-commander",
+  "name": "@jimmy0429/remote-desktop-commander",
+  "version": "0.3.4",
+  "description": "Jimmy Remote Commander: private self-hosted remote MCP, forked from DesktopCommanderMCP",
+  "mcpName": "io.github.jimmy0429/remote-desktop-commander",
   "license": "MIT",
   "author": "Eduards Ruzga",
-  "homepage": "https://github.com/wonderwhy-er/DesktopCommanderMCP",
+  "homepage": "https://github.com/Jimmy0429/remote-desktop-commander",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wonderwhy-er/DesktopCommanderMCP.git"
+    "url": "https://github.com/Jimmy0429/remote-desktop-commander.git"
   },
-  "bugs": "https://github.com/wonderwhy-er/DesktopCommanderMCP/issues",
+  "bugs": "https://github.com/Jimmy0429/remote-desktop-commander/issues",
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
+  },
+  "imports": {
+    "#commander-package": "./package.json"
   },
   "bin": {
     "desktop-commander": "dist/index.js",
     "setup": "dist/setup-claude-server.js",
-    "remove": "dist/uninstall-claude-server.js"
+    "remove": "dist/uninstall-claude-server.js",
+    "jimmy-remote-commander": "dist/self-host/cli.js"
   },
   "files": [
     "dist",
@@ -39,9 +43,9 @@
     "watch": "tsc --watch",
     "start": "node dist/index.js",
     "start:debug": "node --inspect-brk=9229 dist/index.js",
-    "setup": "npm install --include=dev && npm run build && node setup-claude-server.js",
-    "setup:debug": "npm install && npm run build && node setup-claude-server.js --debug",
-    "remove": "npm install && npm run build && node uninstall-claude-server.js",
+    "setup": "node setup-claude-server.js",
+    "setup:debug": "node setup-claude-server.js --debug",
+    "remove": "node uninstall-claude-server.js",
     "prepare": "npm run build",
     "clean": "shx rm -rf dist",
     "test": "npm run build && node test/run-all-tests.js",
@@ -70,7 +74,9 @@
     "logs:export": "npm run build && node scripts/export-fuzzy-logs.js",
     "count-tokens": "npm run build && node scripts/count-tokens.js",
     "count-tokens:json": "npm run build && node scripts/count-tokens.js --json",
-    "device:start:local": "npm run build && DC_ENV=development MCP_SERVER_URL=http://mcp.localhost:3007 npm run device:start:dev"
+    "device:start:local": "npm run build && DC_ENV=development MCP_SERVER_URL=http://mcp.localhost:3007 npm run device:start:dev",
+    "self-host": "node dist/self-host/cli.js",
+    "test:self-host": "node scripts/run-self-host-tests.mjs"
   },
   "publishConfig": {
     "access": "public"
@@ -113,10 +119,10 @@
     "glob": "^10.3.10",
     "highlight.js": "^11.11.1",
     "isbinaryfile": "^5.0.4",
-    "markdown-it": "^14.1.0",
+    "markdown-it": "14.3.3",
     "md-to-pdf": "^5.2.5",
     "mqtt": "5.16.0",
-    "node-forge": "1.4.0",
+    "node-forge": "1.4.3",
     "open": "^10.2.0",
     "pdf-lib": "^1.17.1",
     "pizzip": "^3.2.0",
@@ -129,8 +135,9 @@
     "unbash": "6.0.1",
     "unified": "^11.0.5",
     "unpdf": "~1.8.1",
-    "zod": "^3.24.1",
-    "zod-to-json-schema": "^3.23.5"
+    "zod": "^4.6.7",
+    "zod-to-json-schema": "^3.23.5",
+    "ws": "^8.18.3"
   },
   "optionalDependencies": {
     "caffeinate": "^1.0.1"
@@ -152,10 +159,10 @@
     "shx": "^0.3.4",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
-    "typescript": "^5.3.3",
-    "ws": "^8.18.3"
+    "typescript": "^5.3.3"
   },
   "overrides": {
+    "@hono/node-server": "^2.1.6",
     "md-to-pdf": {
       "chokidar": "^4.0.3"
     },
@@ -164,5 +171,6 @@
     },
     "proxy-addr": "^2.0.8",
     "argparse": "^2.0.1"
-  }
+  },
+  "private": true
 }

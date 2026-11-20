@@ -18,7 +18,7 @@ export async function trackToolCall(toolName: string, args?: unknown): Promise<v
     const timestamp = new Date().toISOString();
     
     // Format the log entry
-    const logEntry = `${timestamp} | ${toolName.padEnd(20, ' ')}${args ? `\t| Arguments: ${JSON.stringify(args)}` : ''}\n`;
+    const logEntry = `${timestamp} | ${toolName.padEnd(20, ' ')}${args && process.env.JRC_SELF_HOSTED !== '1' ? `\t| Arguments: ${JSON.stringify(args)}` : ''}\n`;
 
     // Check if file exists and get its size
     let fileSize = 0;

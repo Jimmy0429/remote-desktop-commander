@@ -15,7 +15,7 @@ import { randomUUID } from 'crypto';
 import * as https from 'https';
 import { platform } from 'os';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 // Get current file directory
 const __filename = fileURLToPath(import.meta.url);
@@ -39,6 +39,11 @@ const log = (...args) => {
         console.log('[Desktop Commander]', ...args);
     }
 };
+
+function isTelemetryDisabled() {
+    return process.env.JRC_SELF_HOSTED === '1' ||
+        ['1', 'true', 'yes', 'on'].includes((process.env.DESKTOP_COMMANDER_DISABLE_TELEMETRY || '').trim().toLowerCase());
+}
 
 /**
  * Get the client ID from the Desktop Commander config file, or generate a new one
@@ -269,6 +274,7 @@ async function detectInstallationSource() {
  * Send installation tracking to telemetry proxy
  */
 async function trackInstallation(installationData) {
+    if (isTelemetryDisabled()) return;
     try {
         const uniqueUserId = await getClientId();
         log("user id", uniqueUserId)
@@ -365,6 +371,7 @@ async function postTelemetryPayload(endpoint, postData, options) {
  * Main execution
  */
 async function main() {
+    if (isTelemetryDisabled()) return;
     try {
         log('Package installation detected');
         
@@ -380,7 +387,7 @@ async function main() {
 }
 
 // Only run if this script is executed directly (not imported)
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
     main();
 }
 

@@ -492,7 +492,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         Dedicated PDF creation and modification tool.
 
                         OUTPUT FILES:
-                        - Creating a PDF requires 'outputPath' with a new filename (e.g., "result_01.pdf", "analysis_2025_01.pdf", etc.).
+                        - Markdown creation writes to 'path', or to 'outputPath' when supplied.
 
                         MODES:
                         1. CREATE NEW PDF:
@@ -501,10 +501,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
                         2. MODIFY EXISTING PDF:
                            - Pass array of operations as 'content'.
-                           - Modifications preserve the original PDF and require a different filename in 'outputPath'.
+                           - Modifications preserve the original PDF and require a new, unused filename in 'outputPath'.
                            - The result includes the original and output paths for reference.
 
-                           write_pdf(path="doc.pdf", content=[
+                           write_pdf(path="doc.pdf", outputPath="revised.pdf", content=[
                                { type: "delete", pageIndexes: [0, 2] },
                                { type: "insert", pageIndex: 1, markdown: "# New Page" }
                            ])
@@ -822,6 +822,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - file_path: Path to the Excel file
                         - range uses FROM:TO format - "SheetName!A1:C10" or "SheetName!C1:C1"
                         - content: 2D array, e.g., [["H1","H2"],["R1","R2"]]
+
+                        PDF FILES (.pdf) - Page operations:
+                        Set range to "pages" and content to an array of insert/delete operations.
+                        Private agents require options.outputPath to name a new file.
+                        Standalone local editing can modify the source in place when outputPath is omitted.
 
                         TEXT FILES - Find/Replace mode:
                         Takes:

@@ -5,7 +5,7 @@ import { mkdir } from 'fs/promises';
 import os from 'os';
 import lockfile from 'proper-lockfile';
 import { VERSION } from './version.js';
-import { CONFIG_FILE } from './config.js';
+import { CONFIG_FILE, SELF_HOSTED_ENGINE, SELF_HOSTED_WORKSPACE } from './config.js';
 import { getDefaultShell } from './utils/shell.js';
 import { writeFileAtomic } from './utils/atomic-write.js';
 import { backupCorruptConfig, buildRecoveredConfig, type RecoveryEvent, type RecoveryPhase } from './config-recovery.js';
@@ -171,6 +171,7 @@ class ConfigManager {
         config = await this.performConfigMutation((latest, existed) => {
           if (!existed) {
             Object.assign(latest, this.getDefaultConfig());
+            if (SELF_HOSTED_WORKSPACE) latest.allowedDirectories = [SELF_HOSTED_WORKSPACE];
             created = true;
           }
         });
@@ -181,13 +182,13 @@ class ConfigManager {
         } catch (recoveryError) {
           // Left as it is, the next start recovers it
           const text = await fs.readFile(this.configPath, 'utf8').catch(() => '');
-          return this.startWithoutSaving(buildRecoveredConfig(this.getDefaultConfig(), null, text),
+          return this.startWithoutSaving(this.recoverSettings(text),
             `config.json could not be parsed, and replacing it failed (${messageOf(recoveryError)}). For this session Desktop Commander uses the settings still readable in it and the defaults for the rest; config.json is left as it is.`);
         }
       } else {
         // There, but it can't be read (e.g. no permission): an existing install,
         // so the welcome page stays off, and initialize has nothing to save for it
-        return this.startWithoutSaving(buildRecoveredConfig(this.getDefaultConfig(), null, ''),
+        return this.startWithoutSaving(this.recoverSettings(''),
           `config.json could not be read (${messageOf(error)}). For this session Desktop Commander uses the default settings; config.json is left as it is.`);
       }
     }
@@ -298,6 +299,12 @@ class ConfigManager {
     }
   }
 
+  private recoverSettings(text: string): ServerConfig {
+    const settings = buildRecoveredConfig(this.getDefaultConfig(), this.initialized ? this.config : null, text);
+    if (SELF_HOSTED_ENGINE) settings.allowedDirectories = [];
+    return settings;
+  }
+
   /**
    * Recovers a corrupt config.json; the caller holds the config lock. It is backed
    * up once, then rewritten as buildRecoveredConfig(). Returns the config now on disk.
@@ -319,7 +326,7 @@ class ConfigManager {
     }
 
     const backupName = await backupCorruptConfig(this.configPath, bytes);
-    const config = buildRecoveredConfig(this.getDefaultConfig(), this.initialized ? this.config : null, text);
+    const config = this.recoverSettings(text);
     await this.writeConfigAtomically(config);
     this.config = { ...config, version: VERSION };
     console.error(`config.json could not be parsed (${parseError.message})${backupName ? `; kept as ${backupName}` : ''}; ` +
@@ -529,6 +536,7 @@ class ConfigManager {
       for (const mutate of this.pendingMutations) mutate(latest);
       this.config = { ...latest, version: VERSION };
     } catch (error: any) {
+      if (SELF_HOSTED_ENGINE) this.config = { ...this.config, allowedDirectories: [] };
       if (error?.code !== 'ENOENT') console.error('Failed to reload config:', error);
     }
   }

@@ -15,8 +15,9 @@
  * 3. Unify the editRange() signature to handle both text search/replace and structured edits
  */
 
-import { getDefaultEditorMetadata, readFile, writeFile, readFileInternal, validatePath } from './filesystem.js';
+import { getDefaultEditorMetadata, readFile, writeFileUnderLock, readFileInternal, validatePath } from './filesystem.js';
 import fs from 'fs/promises';
+import { withFileMutation } from '../utils/file-mutation.js';
 import { ServerResult } from '../types.js';
 import { runFuzzySearchInWorker, getSimilarityRatio } from './fuzzySearch.js';
 import { capture } from '../utils/capture.js';
@@ -25,10 +26,11 @@ import { EditBlockArgsSchema } from "./schemas.js";
 import path from 'path';
 import { detectLineEnding, normalizeLineEndings } from '../utils/lineEndingHandler.js';
 import { configManager } from '../config-manager.js';
+import { SELF_HOSTED_ENGINE } from '../config.js';
 import { fuzzySearchLogger, type FuzzySearchLogEntry } from '../utils/fuzzySearchLogger.js';
 import { resolvePreviewFileType } from '../ui/file-preview/shared/preview-file-types.js';
 import { resolveAbsolutePath } from '../handlers/filesystem-handlers.js';
-import type { EditResult } from '../utils/files/base.js';
+import type { EditResult, FileHandler } from '../utils/files/base.js';
 
 interface SearchReplace {
     search: string;
@@ -48,6 +50,9 @@ interface FuzzyMatch {
  * (0-1 scale where 1 is perfect match and 0 is completely different)
  */
 const FUZZY_THRESHOLD = 0.7;
+
+// The relay relies on isError to distinguish an uncommitted edit from a success.
+const editRefusalStatus = SELF_HOSTED_ENGINE ? { isError: true } : {};
 
 /**
  * Extract character code data from diff
@@ -133,6 +138,7 @@ export async function performSearchReplace(filePath: string, block: SearchReplac
         // Capture file extension in telemetry without capturing the file path
         capture('server_edit_block_empty_search', {fileExtension: fileExtension, expectedReplacements});
         return {
+            ...editRefusalStatus,
             content: [{ 
                 type: "text", 
                 text: "Empty search strings are not allowed. Please provide a non-empty string to search for."
@@ -141,8 +147,13 @@ export async function performSearchReplace(filePath: string, block: SearchReplac
     }
     
 
-    // Read file directly to preserve line endings - critical for edit operations
     const validPath = await validatePath(filePath);
+    return withFileMutation([validPath], () => replaceInFile(validPath, filePath, block, expectedReplacements, origin));
+}
+
+async function replaceInFile(validPath: string, filePath: string, block: SearchReplace, expectedReplacements: number, origin?: 'ui' | 'llm'): Promise<ServerResult> {
+    const fileExtension = path.extname(filePath).toLowerCase();
+    // Read inside the same mutation that commits the edit, preserving line endings.
     const content = await readFileInternal(validPath, 0, Number.MAX_SAFE_INTEGER);
     
     // Make sure content is a string
@@ -203,7 +214,7 @@ export async function performSearchReplace(filePath: string, block: SearchReplac
 RECOMMENDATION: For large search/replace operations, consider breaking them into smaller chunks with fewer lines.`;
         }
         
-        await writeFile(filePath, newContent);
+        await writeFileUnderLock(validPath, newContent);
         capture('server_edit_block_exact_success', {fileExtension: fileExtension, expectedReplacements, hasWarning: warningMessage !== ""});
         const resolvedEditPath = resolveAbsolutePath(filePath);
 
@@ -245,6 +256,7 @@ RECOMMENDATION: For large search/replace operations, consider breaking them into
     if (count > 0 && count !== expectedReplacements) {
         capture('server_edit_block_unexpected_count', {fileExtension: fileExtension, expectedReplacements, expectedReplacementsCount: count});
         return {
+            ...editRefusalStatus,
             content: [{ 
                 type: "text", 
                 text: `Expected ${expectedReplacements} occurrences but found ${count} in ${filePath}. ` + 
@@ -330,6 +342,7 @@ RECOMMENDATION: For large search/replace operations, consider breaking them into
             // If we allow fuzzy matches, we would make the replacement here
             // For now, we'll return a detailed message about the fuzzy match
             return {
+                ...editRefusalStatus,
                 content: [{ 
                     type: "text", 
                     text: `Exact match not found, but found a similar text with ${Math.round(similarity * 100)}% similarity (found in ${executionTime.toFixed(2)}ms):\n\n` +
@@ -348,6 +361,7 @@ RECOMMENDATION: For large search/replace operations, consider breaking them into
             });
             
             return {
+                ...editRefusalStatus,
                 content: [{ 
                     type: "text", 
                     text: `Search content not found in ${filePath}. The closest match was "${fuzzyResult.value}" ` +
@@ -405,6 +419,18 @@ function editFailure(result: EditResult): string {
     return result.errors?.map(e => e.error).join('; ') || 'Unknown error';
 }
 
+async function editStructuredFile(handler: FileHandler, filePath: string, range: string, content: unknown, options?: Record<string, any>): Promise<EditResult> {
+    // PDF page edits reserve all source PDFs and the destination together.
+    // Reserving the base file again here would deadlock.
+    if (path.extname(filePath).toLowerCase() === '.pdf') {
+        return handler.editRange!(filePath, range, content, options);
+    }
+    return withFileMutation([filePath], async () => {
+        if (await validatePath(filePath) !== filePath) throw new Error('File target changed before the edit could start.');
+        return handler.editRange!(filePath, range, content, options);
+    });
+}
+
 /**
  * Handle edit_block command
  *
@@ -455,15 +481,16 @@ export async function handleEditBlock(args: unknown): Promise<ServerResult> {
         if (hasEditRange) {
             try {
                 // parsed.range is guaranteed non-empty string by hasRange check above
-                const result = await handler.editRange!(validatedPath!, parsed.range!, content, parsed.options);
+                const result = await editStructuredFile(handler, validatedPath, parsed.range!, content, parsed.options);
                 if (!result.success) {
                     return createErrorResponse(editFailure(result));
                 }
-                const resolvedRangePath = resolveAbsolutePath(parsed.file_path);
+                const resultPath = result.outputPath ?? parsed.file_path;
+                const resolvedRangePath = resolveAbsolutePath(resultPath);
                 return {
                     content: [{
                         type: "text",
-                        text: `Successfully updated range ${parsed.range} in ${parsed.file_path}`
+                        text: `Successfully updated range ${parsed.range} in ${resultPath}`
                     }],
                     ...(parsed.origin === 'ui' ? {
                         structuredContent: {
@@ -493,7 +520,7 @@ export async function handleEditBlock(args: unknown): Promise<ServerResult> {
     // Plain text files fall through to performSearchReplace.
     if (hasEditRange) {
         try {
-            const result = await handler.editRange!(validatedPath!, '', {
+            const result = await editStructuredFile(handler, validatedPath, '', {
                 old_string: parsed.old_string,
                 new_string: parsed.new_string,
                 expected_replacements: parsed.expected_replacements,

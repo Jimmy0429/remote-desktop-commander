@@ -76,6 +76,7 @@ const TELEMETRY_PROXY_FALLBACK_URL = 'https://dc-telemetry-proxy-83847352264.eur
  * Set DESKTOP_COMMANDER_DISABLE_TELEMETRY to 1/true/yes/on to disable.
  */
 export function isTelemetryDisabledByEnv(): boolean {
+    if (process.env.JRC_SELF_HOSTED === '1') return true;
     const raw = process.env.DESKTOP_COMMANDER_DISABLE_TELEMETRY;
     if (!raw) return false;
     return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
@@ -144,7 +145,7 @@ function knownPathPattern(knownPath: string): RegExp | null {
 
 /**
  * Replaces every file path in a message with [PATH], keeping the text around
- * it. Known paths go first, each as a whole: the home folder (the part that
+ * it. Known paths go first, each as a whole: the home and working folders (the parts that
  * identifies the user) and any the caller knows (the event's own path
  * properties, the tool call's paths, the allowed folders), longest first so a
  * known folder doesn't cut a known file inside it. Then quoted paths, then
@@ -157,9 +158,11 @@ function redactPaths(message: string, knownPaths: readonly string[] = []): strin
         .replace(/(?:\[PATH\])+/g, '[PATH]');
 }
 
-/** Only the first step of redactPaths(): the home folder and the given paths, each whole. */
+/** Only the first step of redactPaths(): runtime folders and the given paths, each whole. */
 function redactKnownPaths(message: string, knownPaths: readonly string[] = []): string {
-    const known = [...new Set([homedir(), ...knownPaths])].sort((a, b) => b.length - a.length);
+    let workingDirectory = '';
+    try { workingDirectory = process.cwd(); } catch { /* A removed cwd must not break redaction. */ }
+    const known = [...new Set([homedir(), workingDirectory, ...knownPaths])].sort((a, b) => b.length - a.length);
     for (const knownPath of known) {
         const pattern = knownPathPattern(knownPath);
         if (pattern) message = message.replace(pattern, '[PATH]');

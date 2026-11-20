@@ -11,7 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { runInstallScript } from './helpers/install-script.js';
 import { assertTelemetryRequests } from './helpers/install-telemetry-assertions.js';
-import { runIfMain, skip } from './helpers/run-if-main.js';
+import { runIfMain } from './helpers/run-if-main.js';
 
 const CALLS = 'test/fixtures/track-installation-calls.js';
 const PROXY = 'https://telemetry.desktopcommander.app/mp/collect';
@@ -22,6 +22,7 @@ const CLEAN = Object.fromEntries([
   'CODESPACES', 'CODESPACE_NAME', 'VSCODE_PID', 'TERM_PROGRAM', 'GITPOD_WORKSPACE_ID',
   'CI', 'GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_WORKFLOW', 'GITLAB_CI', 'CI_PROJECT_NAME', 'JENKINS_URL',
   'JOB_NAME', 'DOCKER_CONTAINER', 'DEBUG', 'NODE_ENV', 'DC_DEBUG',
+  'JRC_SELF_HOSTED', 'DESKTOP_COMMANDER_DISABLE_TELEMETRY',
 ].map((name) => [name, null]));
 const PARENT = { 'ps -p': { stdout: 'npm install @wonderwhy-er/desktop-commander' } };
 
@@ -132,19 +133,27 @@ async function debugOutput() {
   console.log('✓ DEBUG, NODE_ENV=development or DC_DEBUG: it says what it found; otherwise quiet');
 }
 
-/** Checks the directly launched entry point where supported and records the known Windows entry-point skip. */
+/** Checks the directly launched entry point, including escaped spaces and Windows file URLs. */
 async function postinstall() {
-  // npm runs `node dist/track-installation.js`: started directly, it tracks once. On Windows it doesn't yet: it
-  // compares its file: URL with `file://` and the path, which never match there (file:///C:/… against file://C:\…)
+  // npm runs this path directly; pathToFileURL must encode it the same way as import.meta.url.
   const run = await runInstallScript('dist/track-installation.js', { platform: 'linux', commands: PARENT, env: CLEAN });
   assert.strictEqual(run.code, 0, run.stderr);
-  if (process.platform === 'win32') {
-    return skip('track-installation.js: on Windows main() never runs (its started-directly check never matches), '
-      + 'so postinstall tracks nothing (a product bug, its own fix PR)');
-  }
   assert.deepStrictEqual(run.posts.map((post) => post.event), ['package_installed'], 'postinstall tracks once');
   console.log('✓ postinstall: started directly, it tracks once');
   return undefined;
+}
+
+async function disabledTracking() {
+  for (const env of [{ JRC_SELF_HOSTED: '1' }, { DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1' }, { DESKTOP_COMMANDER_DISABLE_TELEMETRY: 'true' }]) {
+    const imported = await track({ env });
+    assert.strictEqual(imported.code, 0, imported.stderr);
+    assert.deepStrictEqual(imported.posts, [], 'exported tracker must honor telemetry disablement');
+    const direct = await runInstallScript('dist/track-installation.js', { commands: PARENT, env: { ...CLEAN, ...env } });
+    assert.strictEqual(direct.code, 0, direct.stderr);
+    assert.deepStrictEqual(direct.posts, [], 'direct postinstall must honor telemetry disablement');
+    assert.deepStrictEqual(direct.commands, [], 'disabled postinstall must not inspect parent processes');
+  }
+  console.log('✓ private mode and environment opt-out disable imported and direct installation tracking');
 }
 
 export default async function run() {
@@ -152,6 +161,7 @@ export default async function run() {
   await dockerWithoutHostname();
   await posts();
   await debugOutput();
+  await disabledTracking();
   await postinstall();
 }
 

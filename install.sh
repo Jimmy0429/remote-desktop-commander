@@ -1,5 +1,17 @@
 #!/bin/bash
 
+# Running the public installer only makes sense inside its own checkout.
+# A piped copy has no package identity, so it also routes to the private guide.
+if ! node -e '
+  const path = require("node:path");
+  const script = require("node:fs").realpathSync(process.argv[1]);
+  const manifest = require(path.join(path.dirname(script), "package.json"));
+  process.exitCode = manifest.name === "@wonderwhy-er/desktop-commander" ? 0 : 1;
+' "${BASH_SOURCE[0]:-}" 2>/dev/null; then
+    printf '%s\n' 'Jimmy Remote Commander uses the private plugin and agent. See plugins/private/README.md and docs/self-hosted.md in your checkout.' >&2
+    exit 1
+fi
+
 # Exit on error
 set -e
 

@@ -1,6 +1,7 @@
 import assert from 'assert';
 import os from 'os';
 import path from 'path';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { sanitizeError, buildEventProperties } from '../dist/utils/capture.js';
 import { runIfMain } from './helpers/run-if-main.js';
 
@@ -113,6 +114,20 @@ const runAllTests = async () => {
         
         assert(!sanitized.message.includes(currentDir), 'Error message should not contain current directory');
         assert(!sanitized.message.includes(homeDir), 'Error message should not contain home directory');
+    }) && allPassed;
+
+    allPassed = await runTest('sanitizeError - A working directory with several spaces is replaced whole', async () => {
+        const previous = process.cwd();
+        const workspace = await realpath(await mkdtemp(path.join(os.tmpdir(), 'dc sanitize private workspace ')));
+        try {
+            process.chdir(workspace);
+            const file = path.join(workspace, 'subfolder', 'document.txt');
+            assert.strictEqual(sanitizeError(new Error(`Cannot read ${file}: permission denied`)).message,
+                'Error: Cannot read [PATH]: permission denied');
+        } finally {
+            process.chdir(previous);
+            await rm(workspace, { recursive: true, force: true });
+        }
     }) && allPassed;
 
     // The paths an event carries (then drops) are replaced whole wherever they appear

@@ -1,2 +1,29 @@
+# Dependencies and generated build output
 node_modules
+**/node_modules
 dist
+*.tsbuildinfo
+
+# Credentials and local state must never be sent to a Docker builder.
+.self-host
+**/.self-host
+.git
+.env*
+**/.env*
+.superpowers
+.mcpregistry_github_token
+.mcpregistry_registry_token
+
+# Local logs, caches, and generated test artifacts
+*.log
+**/*.log
+logs
+coverage
+test-results
+test/test_output
+test_files
+.ripgrep-downloads
+.npm
+.DS_Store
+*.mcpb
+mcpb-bundle
