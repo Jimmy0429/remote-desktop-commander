@@ -1,6 +1,6 @@
 {
   "name": "jimmy-remote-commander",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Connect an AI client to your private server to work with files and terminal sessions on an explicitly selected computer.",
   "mcpServers": {
     "jimmy-remote-commander": {

@@ -1,6 +1,6 @@
 {
   "name": "@jimmy0429/remote-desktop-commander",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Jimmy Remote Commander: private self-hosted remote MCP, forked from DesktopCommanderMCP",
   "mcpName": "io.github.jimmy0429/remote-desktop-commander",
   "license": "MIT",

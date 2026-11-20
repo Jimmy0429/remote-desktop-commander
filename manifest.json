@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "jimmy-remote-commander",
   "display_name": "Jimmy Remote Commander",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Connect a desktop MCP client to computers paired with your private Jimmy Remote Commander server.",
   "author": {
     "name": "Jimmy0429"

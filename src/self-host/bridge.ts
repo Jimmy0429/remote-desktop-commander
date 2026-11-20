@@ -1,3 +1,4 @@
+import { VERSION } from '../version.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -26,8 +27,8 @@ export async function startStdioBridge(options: StdioBridgeOptions): Promise<Std
   let active = 0;
   let remoteReady: Promise<void>;
 
-  const remote = new Client({ name: 'jimmy-remote-commander-bridge', version: '0.1.0' });
-  const local = new Server({ name: 'jimmy-remote-commander', version: '0.1.0' }, { capabilities: { tools: {} } });
+  const remote = new Client({ name: 'jimmy-remote-commander-bridge', version: VERSION });
+  const local = new Server({ name: 'jimmy-remote-commander', version: VERSION }, { capabilities: { tools: {} } });
   const stdio = new StdioServerTransport(process.stdin, process.stdout, { maxBufferSize: 2 * MAX_MESSAGE_BYTES });
   const http = new StreamableHTTPClientTransport(endpoint, {
     requestInit: { headers: { Authorization: `Bearer ${options.ownerToken}` }, redirect: 'error' },

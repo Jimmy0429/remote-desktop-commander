@@ -22,17 +22,29 @@ test('unauthenticated requests through a shared proxy cannot exhaust owner or va
   } finally { await s.close(); await rm(dataDir,{recursive:true,force:true}); }
 });
 
-test('server startup reconciles interrupted persisted operations to unknown', async () => {
+test('restart recovers running audit entries even after 200 subsequent completions', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'jrc-restart-'));
   const registry = DeviceRegistry.open(dataDir);
   const pairing = registry.createPairing();
   const device = registry.enroll(pairing.code,'Crashed fixture','linux');
-  registry.audit({id:'interrupted-write',deviceId:device.deviceId,tool:'write_file',status:'running',startedAt:new Date().toISOString()});
+  const startedAt = new Date().toISOString();
+  for (const id of ['interrupted-write', 'interrupted-move']) {
+    registry.audit({ id, deviceId: device.deviceId, tool: id === 'interrupted-move' ? 'move_file' : 'write_file', status: 'running', startedAt });
+  }
+  for (let i = 0; i < 200; i++) {
+    registry.audit({ id: 'read-' + i, deviceId: device.deviceId, tool: 'read_file', status: 'completed', startedAt, finishedAt: startedAt });
+  }
   const ownerToken = randomBytes(32).toString('base64url');
   const s = await createControlServer({dataDir,ownerToken,port:0});
   try {
     const {activity} = await (await fetch(s.url+'/api/activity',{headers:{Authorization:`Bearer ${ownerToken}`}})).json();
-    assert.equal(activity[0].status,'unknown');
-    assert.ok(activity[0].finishedAt);
+    assert.equal(activity.length, 200);
+    for (const id of ['interrupted-write', 'interrupted-move']) {
+      const recovered = activity.find(record => record.id === id);
+      assert.equal(recovered?.status, 'unknown');
+      assert.ok(recovered.finishedAt);
+    }
+    assert.equal(activity[2].id, 'read-199');
+    assert.equal(activity.at(-1).id, 'read-2');
   } finally {await s.close();await rm(dataDir,{recursive:true,force:true});}
 });

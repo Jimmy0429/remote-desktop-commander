@@ -1,9 +1,10 @@
+import { VERSION } from '../version.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Relay } from './relay.js';
 
 export function createMcpServer(relay: Relay): Server {
-  const server = new Server({ name: 'jimmy-remote-commander', version: '0.1.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'jimmy-remote-commander', version: VERSION }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
     { name: 'list_devices', description: 'List your enrolled computers and their current availability.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
     { name: 'get_remote_call', description: 'Get a retained remote call result. Poll this instead of resubmitting an operation that is still running or has an uncertain outcome.', inputSchema: { type: 'object', properties: { callId: { type: 'string' } }, required: ['callId'], additionalProperties: false }, annotations: { readOnlyHint: true } },

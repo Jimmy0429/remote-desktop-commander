@@ -31,7 +31,7 @@ const metadata: Record<RemoteToolName, Metadata> = {
   },
   write_pdf: {
     title: 'Write/Modify PDF', readOnlyHint: false, destructiveHint: true, openWorldHint: false,
-    description: 'Create a PDF from Markdown or modify a PDF using insert/delete page operations on the selected device. Page indexes are zero-based. An insert can contain Markdown or sourcePdfPath; delete uses pageIndexes. Supply a new outputPath for the result, keeping an existing source PDF intact. Rendering may require the device\'s browser dependency. ' + filePaths,
+    description: 'Create a PDF from Markdown or modify a PDF using insert/delete page operations on the selected device. Markdown creation can replace the specified file. Page indexes are zero-based. An insert can contain Markdown or sourcePdfPath; delete uses pageIndexes. Page operations require outputPath to name a new, unused file and preserve the source. Rendering may require the device\'s browser dependency. ' + filePaths,
   },
   create_directory: {
     title: 'Create Directory', readOnlyHint: false, destructiveHint: false, openWorldHint: false,

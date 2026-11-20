@@ -39,7 +39,7 @@ interface RegistryOptions {
 
 const MAX_DEVICES = 256;
 const MAX_PAIRINGS = 64;
-const MAX_AUDIT = 200;
+const MAX_FINISHED_AUDIT = 200;
 const PAIRING_LIFETIME_MS = 5 * 60 * 1000;
 const MAX_STATE_BYTES = 1024 * 1024;
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -104,7 +104,7 @@ function decodeState(input: unknown): RegistryState {
   const corrupt = () => new Error('Invalid registry state; restore a trusted backup before starting');
   if (!object(input) || !allowedKeys(input, ['version', 'devices', 'audit']) || input.version !== 1 ||
       !Array.isArray(input.devices) || input.devices.length > MAX_DEVICES ||
-      !Array.isArray(input.audit) || input.audit.length > MAX_AUDIT) throw corrupt();
+      !Array.isArray(input.audit)) throw corrupt();
 
   const ids = new Set<string>();
   const hashes = new Set<string>();
@@ -133,6 +133,9 @@ function decodeState(input: unknown): RegistryState {
     auditIds.add(record.id);
     return record;
   });
+  // A v1 file may contain up to 200 legacy running records. The file-size
+  // bound applies to all records; only finished history has a count limit.
+  if (audit.filter(record => record.status !== 'running').length > MAX_FINISHED_AUDIT) throw corrupt();
   return { version: 1, devices, audit };
 }
 
@@ -219,7 +222,9 @@ export class DeviceRegistry {
     const safe = cleanAudit(record);
     const records = this.state.audit.filter(value => value.id !== safe.id);
     records.push(safe);
-    this.persist({ ...this.state, audit: records.slice(-MAX_AUDIT) });
+    const finished = records.filter(value => value.status !== 'running');
+    if (finished.length > MAX_FINISHED_AUDIT) records.splice(records.indexOf(finished[0]), 1);
+    this.persist({ ...this.state, audit: records });
   }
 
   recentAudit(): AuditRecord[] {

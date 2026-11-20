@@ -2,6 +2,8 @@
 
 ## Pre-install verification
 
+For the Windows pilot use **0.3.4** from the verified feature-branch commit. The packaged-client tests submit simultaneous edits against a real paired agent and compare the resulting file contents, then check that a PDF page edit requires a fresh destination and leaves its source intact. The relay tests finish a long call after 200 more recent requests and poll its original call ID. Recovery tests reopen the on-disk registry and verify outcomes for calls that were running when the server stopped.
+
 The private plugin and desktop extension use the fork's stdio bridge. The qualification suite opens the packed desktop extension from a clean directory and reads a uniquely marked file from its enrolled agent. It also exercises the cached plugin configuration against a disposable server. Workspace tests cover case-sensitive paths, live policy changes and engine restarts. Enrollment tests cover an existing credential, a competing enrollment, an interrupted reply and identity-checked startup. Check the latest [draft PR checks](https://github.com/Jimmy0429/remote-desktop-commander/pull/1/checks) for the tested commit and platform results. The physical Windows pilot and off-host HTTPS connection remain separate acceptance steps.
 
 ## Previous November 17 Windows checkpoint

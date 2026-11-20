@@ -121,6 +121,68 @@ test('a slow call can be polled after completion without submitting the operatio
   assert.equal(activity[0].status, 'completed');
 });
 
+test('result retention keeps a long call that finishes after 200 later short calls', { timeout: 120000 }, async t => {
+  const s = await setup(t, { waitMs: 100, callTimeoutMs: 120000 });
+  const d = await s.connect(await s.enroll());
+  const c = await s.client();
+  // Multiple results can finish in the same millisecond.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const pending = await call(c, d.deviceId, 'long');
+  const longId = pending.structuredContent.callId;
+
+  d.socket.on('message', raw => {
+    const request = JSON.parse(raw);
+    if (request.arguments.path === 'short') sendResult(d, request.id, 'short result');
+  });
+  for (let i = 0; i < 200; i++) {
+    let reply = await call(c, d.deviceId, 'short');
+    if (reply.structuredContent?.status === 'running') {
+      const id = reply.structuredContent.callId;
+      reply = await eventually(async () => (await poll(c, id)).structuredContent?.result);
+    }
+    assert.equal(reply.content[0].text, 'short result');
+  }
+  assert.equal((await poll(c, longId)).structuredContent.status, 'running');
+  sendResult(d, longId, 'long result');
+  await receivedThrough(d.socket);
+  const completed = await poll(c, longId);
+  assert.equal(completed.structuredContent?.result.content[0].text, 'long result');
+  assert.equal((await poll(c, d.calls[1].id)).isError, true, 'evict the oldest completion');
+  assert.equal((await poll(c, d.calls[2].id)).structuredContent.status, 'completed');
+  assert.equal(d.calls.length, 201, 'collecting retained results does not dispatch another call');
+});
+
+test('retention discards expired results before enforcing its serialized byte budget', { timeout: 120000 }, async t => {
+  const s = await setup(t, { waitMs: 1, callTimeoutMs: 120000 });
+  const d = await s.connect(await s.enroll());
+  const c = await s.client();
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now });
+
+  const text = '🌱'.repeat(900_000);
+  const resultBytes = Buffer.byteLength(JSON.stringify(result(text)));
+  const capacity = Math.floor((64 * 1024 * 1024) / resultBytes);
+  const ids = [];
+  for (let index = 0; index <= capacity; index++) {
+    const pending = await call(c, d.deviceId);
+    ids.push(pending.structuredContent.callId);
+    // A backward wall-clock adjustment can make a later completion expire first.
+    if (index === 1) t.mock.timers.setTime(now - 600_000);
+    if (index === capacity) t.mock.timers.setTime(now + 1);
+    sendResult(d, ids[index], text);
+    await receivedThrough(d.socket);
+    if (index === 1) t.mock.timers.setTime(now);
+  }
+  assert.equal((await poll(c, ids[1])).isError, true);
+  assert.equal((await poll(c, ids[0])).structuredContent?.status, 'completed', 'expired bytes cannot evict a fresh result');
+
+  const extra = await call(c, d.deviceId);
+  sendResult(d, extra.structuredContent.callId, text);
+  await receivedThrough(d.socket);
+  assert.equal((await poll(c, ids[0])).isError, true, 'evict the oldest live result when the byte budget is exceeded');
+  assert.equal((await poll(c, ids[2])).structuredContent?.status, 'completed');
+});
+
 test('another authenticated device cannot supply a result for the selected device', { timeout: 10000 }, async t => {
   const s = await setup(t), a = await s.connect(await s.enroll('A')), b = await s.connect(await s.enroll('B')), c = await s.client();
   const pending = await call(c, a.deviceId);

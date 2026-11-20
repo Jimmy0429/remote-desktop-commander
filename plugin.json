@@ -1,7 +1,7 @@
 {
   "name": "jimmy-remote-commander",
   "description": "Connect an AI client to your private server to work with files and terminal sessions on an explicitly selected computer.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "author": {
     "name": "Jimmy0429"
   },

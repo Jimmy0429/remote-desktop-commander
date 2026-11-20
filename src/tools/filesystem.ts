@@ -14,6 +14,8 @@ import { isPdfFile } from "./mime-types.js";
 import { parsePdfToMarkdown, editPdf, insertRenderOptions, PdfOperations, PdfMetadata, parseMarkdownToPdf, resolveRender, IgnoredRenderOption } from './pdf/index.js';
 import { isBinaryFile } from 'isbinaryfile';
 import { movePath } from '../utils/rename.js';
+import { writeNewFileAtomic } from '../utils/atomic-write.js';
+import { withFileMutation } from '../utils/file-mutation.js';
 
 // CONSTANTS SECTION - Consolidate all timeouts and thresholds
 const FILE_OPERATION_TIMEOUTS = {
@@ -757,6 +759,13 @@ export async function readFileInternal(filePath: string, offset: number = 0, len
 
 export async function writeFile(filePath: string, content: string, mode: 'rewrite' | 'append' = 'rewrite'): Promise<void> {
     const validPath = await validatePath(filePath);
+    return withFileMutation([validPath], () => writeFileUnderLock(validPath, content, mode));
+}
+
+/** Write while holding the mutation for this canonical path; recheck access after waiting. */
+export async function writeFileUnderLock(filePath: string, content: string, mode: 'rewrite' | 'append' = 'rewrite'): Promise<void> {
+    const validPath = await validatePath(filePath);
+    if (validPath !== filePath) throw new Error('File target changed before the write could commit.');
 
     // Get file extension for telemetry
     const fileExtension = getFileExtension(validPath);
@@ -1128,15 +1137,28 @@ export async function getFileInfo(filePath: string): Promise<Record<string, any>
  * so both check here. An inserted PDF's path is replaced by its validated path.
  *
  * @param validPath The PDF the operations apply to, already validated
- * @returns Where to write the result: outputPath if provided, otherwise the PDF itself
+ * @returns Where to write the result. In-place editing is reserved for edit_block.
  */
 export async function validatePdfOperationPaths(
     validPath: string,
     operations: PdfOperations[],
-    outputPath?: string
+    outputPath?: string,
+    requireNewOutput = false
 ): Promise<string> {
-    // Use outputPath if provided, otherwise overwrite input file
-    const targetPath = outputPath ? await validatePath(outputPath) : validPath;
+    if (requireNewOutput && !outputPath) {
+        throw new Error('PDF page operations require a new outputPath. Choose a filename that does not exist.');
+    }
+    // New outputs address the directory entry itself, including a dangling link.
+    // edit_block can still follow a validated output link for an intentional edit.
+    const targetPath = outputPath ? await validatePath(outputPath, { entry: requireNewOutput }) : validPath;
+    if (requireNewOutput) {
+        try {
+            await fs.lstat(targetPath);
+            throw new Error('PDF outputPath already exists. Choose a new filename.');
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+    }
 
     // Validate paths in operations
     for (const o of operations) {
@@ -1183,7 +1205,7 @@ export async function writePdf(
         return resolveRender(content, options).ignoredOptions;
     } else if (Array.isArray(content)) {
 
-        const targetPath = await validatePdfOperationPaths(validPath, content, outputPath);
+        const targetPath = await validatePdfOperationPaths(validPath, content, outputPath, true);
         const operations: PdfOperations[] = [...content];
 
         capture('server_write_pdf', {
@@ -1197,8 +1219,18 @@ export async function writePdf(
         // Perform the PDF editing (options render the inserted markdown pages)
         const modifiedPdfBuffer = await editPdf(validPath, operations, options);
 
-        // Write the modified PDF to the output path
-        await fs.writeFile(targetPath, modifiedPdfBuffer);
+        // The preflight check above gives early feedback. The link commits the
+        // separate copy only if the name is still free after the render.
+        try {
+            await writeNewFileAtomic(targetPath, modifiedPdfBuffer);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EEXIST') throw new Error('PDF outputPath already exists. Choose a new filename.');
+            if (code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'EPERM' || code === 'EXDEV') {
+                throw new Error(`Could not publish a new PDF (${code}). Choose a writable folder on a filesystem that supports hard links, such as local NTFS on Windows.`);
+            }
+            throw error;
+        }
 
         // Report the options ignored in any inserted page's render options or front matter (once per option)
         const ignored = new Map<string, IgnoredRenderOption>();

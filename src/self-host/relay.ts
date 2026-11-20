@@ -20,10 +20,15 @@ interface RemoteCall {
 }
 
 const errorResult = (text: string): CallToolResult => ({ isError: true, content: [{ type: 'text', text }] });
+const RESULT_TTL_MS = 10 * 60_000;
+const MAX_RETAINED_RESULTS = 200;
+const MAX_RETAINED_RESULT_BYTES = 64 * 1024 * 1024;
 
 export class Relay {
   private connections = new Map<string, Connection>();
-  private calls = new Map<string, RemoteCall>();
+  private runningCalls = new Map<string, RemoteCall>();
+  // Map insertion order records the order of completion, including timestamp ties.
+  private retainedCalls = new Map<string, RemoteCall>();
   private heartbeat: NodeJS.Timeout;
   private sweep: NodeJS.Timeout;
   private closed = false;
@@ -59,8 +64,8 @@ export class Relay {
           return;
         }
         if (!c.ready) throw new Error('Device is not ready');
-        const call = this.calls.get(message.id);
-        if (!call || call.deviceId !== deviceId || call.generation !== c.generation || call.status !== 'running') return;
+        const call = this.runningCalls.get(message.id);
+        if (!call || call.deviceId !== deviceId || call.generation !== c.generation) return;
         // A duplicate delivery says nothing about the original execution with this ID.
         if (message.type === 'error' && message.code === 'duplicate_call') return;
         if (message.type === 'result') this.finish(call, message.result.isError ? 'failed' : 'completed', message.result);
@@ -100,8 +105,7 @@ export class Relay {
     const connection = this.connections.get(deviceId);
     if (!connection?.ready || this.registry.list().find(d => d.id === deviceId)?.revokedAt) throw new Error('Selected device is offline or revoked.');
     if (!connection.tools.has(tool)) throw new Error('Selected device does not support this tool.');
-    const running = [...this.calls.values()].filter(c => c.status === 'running');
-    if (running.length >= 32 || running.filter(c => c.deviceId === deviceId).length >= 8) throw new Error('Too many active calls; wait for existing calls to complete.');
+    if (this.runningCalls.size >= 32 || [...this.runningCalls.values()].filter(c => c.deviceId === deviceId).length >= 8) throw new Error('Too many active calls; wait for existing calls to complete.');
     const { deviceId: _deviceId, ...forwarded } = args;
     const id = randomUUID();
     const payload = JSON.stringify({ type: 'call', id, name: tool, arguments: forwarded });
@@ -113,9 +117,9 @@ export class Relay {
       startedAt: new Date().toISOString(), done, resolve,
       timer: setTimeout(() => this.finish(call, 'unknown', errorResult('Timed out waiting for the device. The operation may still be running. Do not automatically retry.')), this.timeoutMs),
     };
-    this.calls.set(id, call);
+    this.runningCalls.set(id, call);
     try { this.audit(call); }
-    catch { clearTimeout(call.timer); this.calls.delete(id); throw new Error('Unable to record the call; it was not sent.'); }
+    catch { clearTimeout(call.timer); this.runningCalls.delete(id); throw new Error('Unable to record the call; it was not sent.'); }
     try {
       connection.socket.send(payload, err => { if (err) this.finish(call, 'unknown', errorResult('Connection failed. Do not automatically retry; execution outcome is unknown.')); });
     } catch { this.finish(call, 'unknown', errorResult('Connection failed. Do not automatically retry; execution outcome is unknown.')); }
@@ -127,7 +131,7 @@ export class Relay {
 
   poll(id: string): CallToolResult {
     this.prune();
-    const call = this.calls.get(id);
+    const call = this.runningCalls.get(id) ?? this.retainedCalls.get(id);
     if (!call) return errorResult('Call not found or its retained result expired. Do not retry a side effect solely because its result is unavailable.');
     return this.snapshot(call);
   }
@@ -142,7 +146,7 @@ export class Relay {
     c.socket.once('close', () => clearTimeout(terminate));
     c.socket.close(closeCode, closeCode === AGENT_CLOSE_CODES.REPLACED ? 'Device connection replaced'
       : closeCode === AGENT_CLOSE_CODES.REVOKED ? 'Device access revoked' : 'Server stopped');
-    for (const call of this.calls.values()) if (call.deviceId === deviceId && call.generation === c.generation && call.status === 'running') {
+    for (const call of this.runningCalls.values()) if (call.deviceId === deviceId && call.generation === c.generation) {
       this.finish(call, 'unknown', errorResult(`${reason} Do not automatically retry.`));
     }
   }
@@ -167,9 +171,10 @@ export class Relay {
   }
 
   private finish(call: RemoteCall, status: Status, result: CallToolResult): void {
-    if (call.status !== 'running') return;
+    if (!this.runningCalls.delete(call.id)) return;
     clearTimeout(call.timer); call.status = status; call.finishedAt = new Date().toISOString(); call.result = result;
     call.resultBytes = Buffer.byteLength(JSON.stringify(result));
+    this.retainedCalls.set(call.id, call);
     try { this.audit(call); } catch { /* Do not lose a completed result because durable metadata failed. */ }
     call.resolve(); this.prune();
   }
@@ -180,12 +185,16 @@ export class Relay {
   }
 
   private prune(): void {
-    const now = Date.now(); let bytes = 0; let retained = 0;
-    const entries = [...this.calls.values()].reverse();
-    for (const c of entries) {
-      if (c.status === 'running') continue;
-      bytes += c.resultBytes ?? 0; retained++;
-      if (now - Date.parse(c.finishedAt!) > 600_000 || retained > 200 || bytes > 64 * 1024 * 1024) this.calls.delete(c.id);
+    const cutoff = Date.now() - RESULT_TTL_MS;
+    let bytes = 0;
+    for (const [id, call] of this.retainedCalls) {
+      if (Date.parse(call.finishedAt!) < cutoff) this.retainedCalls.delete(id);
+      else bytes += call.resultBytes!;
+    }
+    for (const [id, call] of this.retainedCalls) {
+      if (this.retainedCalls.size <= MAX_RETAINED_RESULTS && bytes <= MAX_RETAINED_RESULT_BYTES) break;
+      this.retainedCalls.delete(id);
+      bytes -= call.resultBytes!;
     }
   }
 }

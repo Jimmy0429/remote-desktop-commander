@@ -11,17 +11,13 @@ import assert from 'assert';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { isNoChrome } from './helpers/pdf.js';
+import { isNoChrome, pdfWorkspace } from './helpers/pdf.js';
 import { runIfMain, skip } from './helpers/run-if-main.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const OUTPUT_DIR = path.join(__dirname, 'test_output');
-const OUTPUT_FILE = path.join(OUTPUT_DIR, 'created_sample.pdf');
-const MODIFIED_FILE = path.join(OUTPUT_DIR, 'modified_sample.pdf');
 const SAMPLE_FILE = path.join(__dirname, 'samples', 'Presentation Example.pdf');
-const SAMPLE_FILE_MODIFIED = path.join(OUTPUT_DIR, 'Presentation Example Modified.pdf');
 
 /** Text of each page (or only the given 1-based pages), as the product's PDF parser reads it back */
 async function pageTexts(file, pages) {
@@ -29,14 +25,19 @@ async function pageTexts(file, pages) {
 }
 
 async function main() {
-    console.log('🧪 PDF Creation & Modification Test Suite');
-
-    // Ensure output directory exists
+    const ws = pdfWorkspace('pdf-creation');
     try {
-        await fs.mkdir(OUTPUT_DIR, { recursive: true });
-    } catch (e) {
-        // Ignore if exists
+        return await createAndModify(ws.allowed);
+    } finally {
+        ws.cleanup();
     }
+}
+
+async function createAndModify(outputDir) {
+    console.log('🧪 PDF Creation & Modification Test Suite');
+    const OUTPUT_FILE = path.join(outputDir, 'created_sample.pdf');
+    const MODIFIED_FILE = path.join(outputDir, 'modified_sample.pdf');
+    const SAMPLE_FILE_MODIFIED = path.join(outputDir, 'Presentation Example Modified.pdf');
 
     // Create a multi-page markdown to allow for meaningful delete operations
     const markdown = `
@@ -94,7 +95,7 @@ console.log('Line 3');
         console.log('\n2. Testing PDF Modification (Insert & Delete & Merge)...');
 
         // Create a temporary PDF to merge
-        const tempMergeFile = path.join(OUTPUT_DIR, 'temp_merge.pdf');
+        const tempMergeFile = path.join(outputDir, 'temp_merge.pdf');
         await writePdf(tempMergeFile, '# Merged Page\n\nThis page was merged from another PDF file.');
         const originalPages = (await pageTexts(OUTPUT_FILE)).length;
         const mergePages = (await pageTexts(tempMergeFile)).length;

@@ -103,7 +103,9 @@ test('audit keeps only bounded metadata, updates status, and reloads newest reco
   registry.audit({ ...record, status: 'completed', finishedAt: '2026-11-17T12:00:01.000Z', durationMs: 1000 });
   assert.equal(registry.recentAudit().length, 1);
   assert.equal(registry.recentAudit()[0].status, 'completed');
-  for (let index = 1; index <= 205; index++) registry.audit({ ...record, id: `call-${index}` });
+  for (let index = 1; index <= 205; index++) {
+    registry.audit({ ...record, id: `call-${index}`, status: 'completed', finishedAt: record.startedAt });
+  }
   const reopened = DeviceRegistry.open(directory);
   const records = reopened.recentAudit();
   assert.equal(records.length, 200);
@@ -116,6 +118,23 @@ test('audit keeps only bounded metadata, updates status, and reloads newest reco
   assert.ok(!persisted.includes('arguments'));
   assert.throws(() => registry.audit({ ...record, status: 'invalid' }), /audit/i);
   assert.throws(() => registry.audit({ ...record, durationMs: Infinity }), /audit/i);
+});
+
+test('existing v1 registry with 200 running records still opens and preserves them', t => {
+  const { directory, registry } = fixture(t);
+  const { deviceId } = enroll(registry);
+  const file = path.join(directory, 'registry.json');
+  const legacy = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const record = { deviceId, tool: 'read_file', status: 'running', startedAt: new Date().toISOString() };
+  legacy.audit = Array.from({ length: 200 }, (_, i) => ({ ...record, id: `legacy-${i}` }));
+  fs.writeFileSync(file, JSON.stringify(legacy));
+
+  const reopened = DeviceRegistry.open(directory);
+  reopened.audit({ ...record, id: 'later', status: 'completed', finishedAt: record.startedAt });
+  const records = DeviceRegistry.open(directory).recentAudit();
+  assert.equal(records.length, 201);
+  assert.equal(records[0].id, 'later');
+  assert.deepEqual(records.slice(1).reverse(), legacy.audit);
 });
 
 test('pairing and device capacity reject excess enrollment without invalidating existing credentials', t => {

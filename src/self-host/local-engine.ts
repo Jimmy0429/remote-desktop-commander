@@ -1,3 +1,4 @@
+import { VERSION } from '../version.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { CallToolResultSchema, type CallToolResult, type Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -48,7 +49,7 @@ export class LocalEngine {
     });
     // Drain diagnostics without persisting file contents, command arguments, or credentials.
     transport.stderr?.on('data',()=>{});
-    const client=new Client({name:'jimmy-remote-commander-agent',version:'0.1.0'},{capabilities:{}});
+    const client=new Client({name:'jimmy-remote-commander-agent',version:VERSION},{capabilities:{}});
     this.transport=transport;
     this.client=client;
     client.onclose=()=>{

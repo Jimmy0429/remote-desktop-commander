@@ -223,6 +223,14 @@ The remote catalog omits engine-configuration mutation, vendor feedback and onbo
 
 Long-running operations may return a call ID. Use `get_remote_call` to check that operation's result. An `unknown` outcome means the server cannot establish whether execution completed, for example after a connection loss or timeout. Inspect the machine's state before issuing another write or command. The service does not automatically replay uncertain operations. Normal long calls remain running and pollable; the server hard deadline is 31 minutes, slightly longer than the engine's 30-minute request deadline. A pre-execution refusal is reported as not started. If an operation executes but its output is too large, the response explicitly says it executed and should not be repeated just to recover output; the engine and other terminal sessions stay alive.
 
+### Editing files and retrieving command results
+
+For this pilot, build the server and Windows agent from the same 0.3.4 checkout and use the matching client. An existing installation needs its server and agent processes restarted after the build. The agent coordinates concurrent text edits, document edits and file writes to the same file. Edits to different lines of one file can both complete. An external editor, a PowerShell command, or a second agent process can still change the same file independently. Back up important files before sustained editing: interrupting a text rewrite can leave a partial file.
+
+For PDF page insertions and deletions with `write_pdf`, supply the existing source in `path` and a **new filename** in `outputPath`, such as `notes-edited.pdf`. Choose a local NTFS destination on Windows. The tool refuses an omitted or occupied output path and publishes the finished file without replacing an existing file. Markdown-to-PDF creation keeps its existing calling convention.
+
+When a long operation returns a call ID, poll it with `get_remote_call`. Finished results are retained by completion order, subject to the count, age, and memory limits. During a server restart, the audit retains metadata for interrupted calls and marks them as having an unknown outcome. The result bodies themselves live in memory.
+
 ## Host behind HTTPS
 
 For a remote deployment, choose a hostname, point its DNS records at the server, and place the control server behind a TLS proxy. The app requires HTTPS/WSS for non-loopback deployments. Configure one public origin and preserve its host header through the proxy; arbitrary forwarded headers are not used to select a trusted origin. Once `--public-url` is set, use that exact HTTPS origin for all CLI, agent, and bridge connections, even from the server machine; direct loopback requests are rejected by the Host check.

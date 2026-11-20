@@ -118,7 +118,7 @@ export const WritePdfArgsSchema = z.object({
     },
     z.union([z.string(), z.array(PdfOperationSchema)])
   ),
-  outputPath: z.string().optional(),
+  outputPath: z.string().optional().describe('Required for page operations. Choose a new filename that does not already exist.'),
   options: z.object({}).passthrough().optional(), // Allow passing options to md-to-pdf
 });
 
