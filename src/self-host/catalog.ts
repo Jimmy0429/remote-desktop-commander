@@ -51,7 +51,7 @@ const metadata: Record<RemoteToolName, Metadata> = {
   },
   edit_block: {
     title: 'Edit Block', readOnlyHint: false, destructiveHint: true, openWorldHint: false,
-    description: 'Make a focused edit on the selected device. Text files use exact old_string/new_string replacement; include enough surrounding text to identify the intended occurrence. expected_replacements defaults to one. Excel range edits use a range such as Sheet1!A1:C3 and a two-dimensional content array. Existing Word documents use the XML returned by read_file for exact replacement. ' + filePaths,
+    description: 'Make a focused edit on the selected device. Text files use exact old_string/new_string replacement; include enough surrounding text to identify the intended occurrence. expected_replacements defaults to one. Excel range edits use a range such as Sheet1!A1:C3 and a two-dimensional content array. Existing Word documents use the XML returned by read_file for exact replacement. PDF range edits use an array of page operations and require options.outputPath to name a new, unused file. ' + filePaths,
   },
   start_search: {
     title: 'Start Search', readOnlyHint: true, destructiveHint: false, openWorldHint: false,

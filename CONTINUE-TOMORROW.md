@@ -6,6 +6,8 @@ Previous checkpoint: **`49c70fd6725d9a8c3d056312576fdf2a55911839`**, branch **`f
 
 ## Start here
 
+Use pilot **0.3.4** for the server, Windows agent and desktop client. Check the head commit and passing Windows run in [PR #1](https://github.com/Jimmy0429/remote-desktop-commander/pull/1/checks). The 0.3.3 desktop extension predates the file and result-retention fixes. See [editing files and retrieving results](docs/self-hosted.md#editing-files-and-retrieving-command-results) for the new PDF destination requirement.
+
 1. Read `docs/self-host-verification.md` for the final checkpoint evidence and limitations. Read `docs/self-hosted.md` for commands and credential handling.
 2. Check `git status --short` and the feature branch `feat/self-hosted-remote`. The work is in [draft PR #1](https://github.com/Jimmy0429/remote-desktop-commander/pull/1); `main` is the upstream base. Do not accidentally install `main` or merge the draft as part of resuming.
 3. Identify the owner's new Windows computer and its Windows version, architecture, available Node runtime, and intended working directory. Use normal user privileges. No UAC bypass, firewall-wide opening, or LocalSystem agent is part of this design.

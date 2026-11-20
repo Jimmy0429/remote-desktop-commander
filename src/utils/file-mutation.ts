@@ -22,7 +22,7 @@ async function mutationKeys(canonicalPath: string): Promise<string[]> {
 
 /** Reserve all inputs and outputs together, so overlapping edits cannot deadlock. */
 export async function withFileMutation<T>(canonicalPaths: string[], mutate: () => Promise<T>): Promise<T> {
-    const groups = await Promise.all(canonicalPaths.map(mutationKeys));
+    const groups = await Promise.all(Array.from(new Set(canonicalPaths), mutationKeys));
     const keys = new Set(groups.flat());
     const previous = Array.from(keys, key => pending.get(key));
     const result = Promise.all(previous).then(mutate);

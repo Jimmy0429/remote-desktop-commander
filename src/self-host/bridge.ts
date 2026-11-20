@@ -3,17 +3,34 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema, McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js';
+import { CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema, McpError, ErrorCode, type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { MAX_MESSAGE_BYTES, safeRemoteUrl } from './protocol.js';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_ACTIVE_REQUESTS = 8;
-const MAX_PAYLOAD_BYTES = MAX_MESSAGE_BYTES - 1024;
+const MAX_REQUEST_PARAMS_BYTES = MAX_MESSAGE_BYTES - 1024;
 const FAILED_CONNECTION = 'Remote MCP connection failed. An in-flight operation may have executed; inspect its state before retrying. The bridge did not retry the operation.';
 
 export interface StdioBridgeOptions { serverUrl: string; ownerToken: string; }
 export interface StdioBridgeExit { exitCode: 0 | 1; reason: 'closed' | 'transport_failed'; }
 export interface StdioBridge { close(): Promise<void>; closed: Promise<StdioBridgeExit>; }
+
+class BoundedStdioTransport extends StdioServerTransport {
+  override async send(message: JSONRPCMessage): Promise<void> {
+    // A retained result includes relay metadata. Measure the actual local
+    // frame, including this client's request ID and the stdio line ending.
+    if (Buffer.byteLength(serializeMessage(message)) <= MAX_MESSAGE_BYTES) return super.send(message);
+    if ('result' in message || 'error' in message) {
+      const error: JSONRPCMessage = {
+        jsonrpc: '2.0', id: message.id,
+        error: { code: ErrorCode.InternalError, message: 'The reply exceeds the stdio message limit. Do not repeat a side effect solely to recover its output.' },
+      };
+      if (Buffer.byteLength(serializeMessage(error)) <= MAX_MESSAGE_BYTES) return super.send(error);
+    }
+    throw new Error('MCP stdio message exceeds the size limit.');
+  }
+}
 
 /** Connect a local MCP client to this private service without exposing a local port. */
 export async function startStdioBridge(options: StdioBridgeOptions): Promise<StdioBridge> {
@@ -29,7 +46,7 @@ export async function startStdioBridge(options: StdioBridgeOptions): Promise<Std
 
   const remote = new Client({ name: 'jimmy-remote-commander-bridge', version: VERSION });
   const local = new Server({ name: 'jimmy-remote-commander', version: VERSION }, { capabilities: { tools: {} } });
-  const stdio = new StdioServerTransport(process.stdin, process.stdout, { maxBufferSize: 2 * MAX_MESSAGE_BYTES });
+  const stdio = new BoundedStdioTransport(process.stdin, process.stdout, { maxBufferSize: 2 * MAX_MESSAGE_BYTES });
   const http = new StreamableHTTPClientTransport(endpoint, {
     requestInit: { headers: { Authorization: `Bearer ${options.ownerToken}` }, redirect: 'error' },
     // This service uses JSON responses and explicit call-ID polling, not replay.
@@ -100,15 +117,13 @@ export async function startStdioBridge(options: StdioBridgeOptions): Promise<Std
 
   async function limited<T>(params: unknown, run: () => Promise<T>): Promise<T> {
     if (closing) throw new McpError(ErrorCode.InternalError, 'The MCP bridge is closed.');
-    if (Buffer.byteLength(JSON.stringify(params)) > MAX_PAYLOAD_BYTES) throw new McpError(ErrorCode.InvalidParams, 'Request is too large; it was not forwarded.');
+    if (Buffer.byteLength(JSON.stringify(params)) > MAX_REQUEST_PARAMS_BYTES) throw new McpError(ErrorCode.InvalidParams, 'Request is too large; it was not forwarded.');
     if (active >= MAX_ACTIVE_REQUESTS) throw new McpError(ErrorCode.InternalError, 'Too many active requests; this request was not forwarded.');
     active++;
     try {
       await remoteReady;
       if (closing) throw new Error('Closed');
-      const result = await run();
-      if (Buffer.byteLength(JSON.stringify(result)) > MAX_PAYLOAD_BYTES) throw new Error('Oversized result');
-      return result;
+      return await run();
     } catch {
       // Do not include upstream error bodies, headers, URLs, or credentials.
       throw new McpError(ErrorCode.InternalError, FAILED_CONNECTION);

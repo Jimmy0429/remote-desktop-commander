@@ -823,6 +823,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - range uses FROM:TO format - "SheetName!A1:C10" or "SheetName!C1:C1"
                         - content: 2D array, e.g., [["H1","H2"],["R1","R2"]]
 
+                        PDF FILES (.pdf) - Page operations:
+                        Set range to "pages" and content to an array of insert/delete operations.
+                        Private agents require options.outputPath to name a new file.
+                        Standalone local editing can modify the source in place when outputPath is omitted.
+
                         TEXT FILES - Find/Replace mode:
                         Takes:
                         - file_path: Path to the file to edit

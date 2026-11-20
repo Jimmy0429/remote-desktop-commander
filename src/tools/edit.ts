@@ -420,18 +420,13 @@ function editFailure(result: EditResult): string {
 }
 
 async function editStructuredFile(handler: FileHandler, filePath: string, range: string, content: unknown, options?: Record<string, any>): Promise<EditResult> {
-    const paths = [filePath];
-    // PDF range edits may read one file and commit to a second. Reserve both
-    // in one operation, including when another edit uses the opposite order.
-    if (path.extname(filePath).toLowerCase() === '.pdf' && options?.outputPath) {
-        const outputPath = await validatePath(options.outputPath);
-        options = { ...options, outputPath };
-        paths.push(outputPath);
+    // PDF page edits reserve all source PDFs and the destination together.
+    // Reserving the base file again here would deadlock.
+    if (path.extname(filePath).toLowerCase() === '.pdf') {
+        return handler.editRange!(filePath, range, content, options);
     }
-    return withFileMutation(paths, async () => {
-        for (const target of paths) {
-            if (await validatePath(target) !== target) throw new Error('File target changed before the edit could start.');
-        }
+    return withFileMutation([filePath], async () => {
+        if (await validatePath(filePath) !== filePath) throw new Error('File target changed before the edit could start.');
         return handler.editRange!(filePath, range, content, options);
     });
 }
@@ -490,11 +485,12 @@ export async function handleEditBlock(args: unknown): Promise<ServerResult> {
                 if (!result.success) {
                     return createErrorResponse(editFailure(result));
                 }
-                const resolvedRangePath = resolveAbsolutePath(parsed.file_path);
+                const resultPath = result.outputPath ?? parsed.file_path;
+                const resolvedRangePath = resolveAbsolutePath(resultPath);
                 return {
                     content: [{
                         type: "text",
-                        text: `Successfully updated range ${parsed.range} in ${parsed.file_path}`
+                        text: `Successfully updated range ${parsed.range} in ${resultPath}`
                     }],
                     ...(parsed.origin === 'ui' ? {
                         structuredContent: {

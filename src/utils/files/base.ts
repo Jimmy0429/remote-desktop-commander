@@ -181,6 +181,8 @@ export interface ExcelSheet {
  * Result from edit operation (used by editRange)
  */
 export interface EditResult {
+    /** Actual destination for a structured edit that saves a copy. */
+    outputPath?: string;
     /** Whether all edits succeeded */
     success: boolean;
 

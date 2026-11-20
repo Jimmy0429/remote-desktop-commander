@@ -9,7 +9,7 @@ import { writeNewFileAtomic } from '../dist/utils/atomic-write.js';
 import { callToolOnceLoaded } from './helpers/heavy-packages.js';
 import { answerText } from './helpers/mcp-client.js';
 
-test('write_pdf page operations publish a separate new file', { timeout: 60000 }, async t => {
+test('private PDF page operations publish a separate new file', { timeout: 60000 }, async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'jrc-pdf-source-')));
   const workspace = join(root, 'workspace');
   const inputs = join(workspace, 'inputs');
@@ -83,14 +83,30 @@ test('write_pdf page operations publish a separate new file', { timeout: 60000 }
       assert.deepEqual((await readdir(workspace)).sort(), before.sort());
     });
 
-    await t.test('edit_block retains its explicit in-place PDF editing behavior', async () => {
-      const target = join(workspace, 'in-place.pdf');
-      await writeFile(target, original);
-      const result = await callToolOnceLoaded(client, {
-        name: 'edit_block', arguments: { file_path: target, range: 'p', content },
+    const editPages = outputPath => callToolOnceLoaded(client, {
+      name: 'edit_block',
+      arguments: { file_path: source, range: 'p', content, options: { outputPath } },
+    });
+    for (const [label, outputPath] of [
+      ['missing destination', undefined],
+      ['source alias', join(aliasDir, 'source.pdf')],
+      ['occupied destination', existing],
+    ]) {
+      await t.test('private edit_block refuses PDF page operations with ' + label, async () => {
+        const result = await editPages(outputPath);
+        assert.equal(result.isError, true, answerText(result));
+        assert.match(answerText(result), /new outputPath|already exists/i);
+        assert.deepEqual(await readFile(source), original);
+        assert.equal(await readFile(existing, 'utf8'), 'preserve this destination');
       });
+    }
+    await t.test('private edit_block writes PDF pages to a fresh copy', async () => {
+      const outputPath = join(workspace, 'edited-copy.pdf');
+      const result = await editPages(outputPath);
       assert.ok(!result.isError, answerText(result));
-      assert.equal((await PDFDocument.load(await readFile(target))).getPageCount(), 1);
+      assert.ok(answerText(result).includes('edited-copy.pdf'), answerText(result));
+      assert.equal((await PDFDocument.load(await readFile(outputPath))).getPageCount(), 1);
+      assert.deepEqual(await readFile(source), original);
     });
   } finally {
     await engine.close();

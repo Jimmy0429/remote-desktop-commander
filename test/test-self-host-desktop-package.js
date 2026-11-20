@@ -104,6 +104,9 @@ test('installed desktop archive reads and edits files on its paired device', { t
       const refused = await call('write_pdf', { path, content });
       assert.equal(refused.isError, true, 'Omitting outputPath must refuse the edit');
       assert.match(JSON.stringify(refused.content), /outputPath/i);
+      const rangeEdit = await call('edit_block', { file_path: path, range: 'p', content });
+      assert.equal(rangeEdit.isError, true, 'Private edit_block must also preserve the PDF source');
+      assert.match(JSON.stringify(rangeEdit.content), /outputPath/i);
       assert.deepEqual(await readFile(path), original);
     });
   } finally {

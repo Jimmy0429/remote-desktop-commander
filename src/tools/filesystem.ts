@@ -1137,7 +1137,7 @@ export async function getFileInfo(filePath: string): Promise<Record<string, any>
  * so both check here. An inserted PDF's path is replaced by its validated path.
  *
  * @param validPath The PDF the operations apply to, already validated
- * @returns Where to write the result. In-place editing is reserved for edit_block.
+ * @returns Where to write the result. Only standalone edit_block permits in-place editing.
  */
 export async function validatePdfOperationPaths(
     validPath: string,
@@ -1149,7 +1149,7 @@ export async function validatePdfOperationPaths(
         throw new Error('PDF page operations require a new outputPath. Choose a filename that does not exist.');
     }
     // New outputs address the directory entry itself, including a dangling link.
-    // edit_block can still follow a validated output link for an intentional edit.
+    // Standalone edit_block may still follow a validated output link.
     const targetPath = outputPath ? await validatePath(outputPath, { entry: requireNewOutput }) : validPath;
     if (requireNewOutput) {
         try {
@@ -1169,6 +1169,57 @@ export async function validatePdfOperationPaths(
         }
     }
     return targetPath;
+}
+
+async function recheckPdfPath(target: string, entry = false): Promise<void> {
+    if (await validatePath(target, { entry }) !== target) {
+        throw new Error('PDF path changed while waiting to use it. Check the paths and try again.');
+    }
+}
+
+/** Apply a page operation under one reservation for its source, inserts and destination. */
+export async function applyPdfPageEdits(
+    filePath: string,
+    content: PdfOperations[],
+    outputPath?: string,
+    requireNewOutput = false,
+    renderOptions: Record<string, any> = {},
+): Promise<string> {
+    const source = await validatePath(filePath);
+    // Validation resolves insert paths. Do not modify the caller's request.
+    const operations = content.map(operation => ({ ...operation }));
+    const target = await validatePdfOperationPaths(source, operations, outputPath, requireNewOutput);
+    const inputs = new Set([source]);
+    for (const operation of operations) {
+        if (operation.type === 'insert' && operation.sourcePdfPath) inputs.add(operation.sourcePdfPath);
+    }
+
+    return withFileMutation([...inputs, target], async () => {
+        for (const input of inputs) await recheckPdfPath(input);
+        await recheckPdfPath(target, requireNewOutput);
+        const bytes = await editPdf(source, operations, renderOptions);
+        await recheckPdfPath(target, requireNewOutput);
+        if (!requireNewOutput) {
+            await fs.writeFile(target, bytes);
+            return target;
+        }
+        // Exclusive publication also protects against other processes that
+        // create the destination after validation or while the PDF is rendering.
+        try {
+            await writeNewFileAtomic(target, bytes);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EEXIST') throw new Error('PDF outputPath already exists. Choose a new filename.');
+            if (code === 'EPERM' || code === 'EACCES') {
+                throw new Error(`Could not publish a new PDF (${code}). Check access to the destination folder.`);
+            }
+            if (code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'EXDEV' || code === 'ENOSYS') {
+                throw new Error(`Could not publish a new PDF (${code}). Choose a filesystem that supports hard links, such as local NTFS on Windows.`);
+            }
+            throw error;
+        }
+        return target;
+    });
 }
 
 /**
@@ -1197,44 +1248,30 @@ export async function writePdf(
             mode: 'create'
         });
 
-        const pdfBuffer = await parseMarkdownToPdf(content, options);
-        // Use outputPath if provided, otherwise overwrite input file
         const targetPath = outputPath ? await validatePath(outputPath) : validPath;
-        await fs.writeFile(targetPath, pdfBuffer);
+        await withFileMutation([targetPath], async () => {
+            await recheckPdfPath(targetPath);
+            const pdfBuffer = await parseMarkdownToPdf(content, options);
+            await recheckPdfPath(targetPath);
+            await fs.writeFile(targetPath, pdfBuffer);
+        });
         // The render succeeded; report which of the caller's/front matter's options were ignored
         return resolveRender(content, options).ignoredOptions;
     } else if (Array.isArray(content)) {
 
-        const targetPath = await validatePdfOperationPaths(validPath, content, outputPath, true);
-        const operations: PdfOperations[] = [...content];
-
         capture('server_write_pdf', {
             fileExtension: fileExtension,
-            operationCount: operations.length,
+            operationCount: content.length,
             mode: 'modify',
-            deleteCount: operations.filter(op => op.type === 'delete').length,
-            insertCount: operations.filter(op => op.type === 'insert').length
+            deleteCount: content.filter(op => op.type === 'delete').length,
+            insertCount: content.filter(op => op.type === 'insert').length
         });
 
-        // Perform the PDF editing (options render the inserted markdown pages)
-        const modifiedPdfBuffer = await editPdf(validPath, operations, options);
-
-        // The preflight check above gives early feedback. The link commits the
-        // separate copy only if the name is still free after the render.
-        try {
-            await writeNewFileAtomic(targetPath, modifiedPdfBuffer);
-        } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
-            if (code === 'EEXIST') throw new Error('PDF outputPath already exists. Choose a new filename.');
-            if (code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'EPERM' || code === 'EXDEV') {
-                throw new Error(`Could not publish a new PDF (${code}). Choose a writable folder on a filesystem that supports hard links, such as local NTFS on Windows.`);
-            }
-            throw error;
-        }
+        await applyPdfPageEdits(validPath, content, outputPath, true, options);
 
         // Report the options ignored in any inserted page's render options or front matter (once per option)
         const ignored = new Map<string, IgnoredRenderOption>();
-        for (const op of operations) {
+        for (const op of content) {
             if (op.type === 'insert' && op.markdown !== undefined) {
                 for (const ignoredOption of resolveRender(op.markdown, insertRenderOptions(op, options)).ignoredOptions) {
                     ignored.set(ignoredOption.option, ignoredOption);

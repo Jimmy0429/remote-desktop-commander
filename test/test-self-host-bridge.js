@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -199,6 +199,44 @@ test('stdio bridge preserves tools and async results through a real server and a
   const processResult = await settledCall(t, bridge.client, 'start_process', args({ command, timeout_ms: 3000, ...(process.platform === 'win32' ? { shell: 'powershell.exe' } : {}) }));
   assert.ok(processResult.callId, 'Slow operation must expose the remote call ID without resubmission.');
   assert.match(JSON.stringify(processResult.result), /BRIDGE_PROCESS_MARKER/);
+  // The agent reserves room for transport metadata. A poll uses some of
+  // that space to wrap a large result with its call ID, outcome and device ID.
+  const boundaryFile = join(f.workspace, 'near-limit.txt');
+  const readBoundaryFile = args({ path: boundaryFile, length: 1 });
+  await writeFile(boundaryFile, 'x');
+  const sample = (await settledCall(t, bridge.client, 'read_file', readBoundaryFile)).result;
+  const overhead = Buffer.byteLength(JSON.stringify(sample)) - 1;
+  const fixtureLength = MAX_MESSAGE_BYTES - 1024 - 128 - overhead;
+  await writeFile(boundaryFile, 'x'.repeat(fixtureLength));
+  const read = await bridge.client.callTool({ name: 'read_file', arguments: readBoundaryFile });
+  // If a fast device returned inline, still exercise retrieval of that same
+  // completed call using the most recent audit ID. No second read is issued.
+  const callId = read.structuredContent?.callId ?? (await (await fetch(server.url + '/api/activity', {
+    headers: { Authorization: `Bearer ${f.ownerToken}` },
+  })).json()).activity[0].id;
+  const poll = { name: 'get_remote_call', arguments: { callId } };
+  const large = await settledResult(t, bridge.client, 'near-limit file', await bridge.client.callTool(poll));
+  assert.equal(large.callId, callId);
+  assert.equal(large.result.content[0].text.length, sample.content[0].text.length - 1 + fixtureLength);
+
+  // String IDs are legal JSON-RPC. This one would put the re-encoded reply
+  // over the wire limit, although the server's HTTP response still fits.
+  const longId = 'i'.repeat(2048);
+  const delivery = new EventEmitter();
+  const toClient = bridge.transport.onmessage;
+  bridge.transport.onmessage = (msg, extra) => {
+    if (msg.id === longId) delivery.emit('reply', msg);
+    else toClient(msg, extra);
+  };
+  try {
+    const reply = once(delivery, 'reply', { signal: AbortSignal.timeout(10000) });
+    await bridge.transport.send({ jsonrpc: '2.0', id: longId, method: 'tools/call', params: poll });
+    const [frame] = await reply;
+    assert.match(frame.error?.message ?? '', /stdio message limit/);
+    assert.ok(Buffer.byteLength(JSON.stringify(frame)) + 1 <= MAX_MESSAGE_BYTES);
+  } finally {
+    bridge.transport.onmessage = toClient;
+  }
   assert.equal(bridge.errors.length, 0, 'Stdout must contain protocol messages only.');
   const beforeOversize = forwardedCalls;
   await assert.rejects(bridge.client.callTool({ name: 'write_file', arguments: args({ path: file, content: 'x'.repeat(MAX_MESSAGE_BYTES) }) }), /too large.*not forwarded/i);
