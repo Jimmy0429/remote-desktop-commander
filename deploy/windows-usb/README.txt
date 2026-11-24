@@ -8,7 +8,9 @@ Leave runtime, app and the launcher together.
 On an employer-managed PC, get approval for this agent before running either
 launcher. Follow your normal IT process if Windows or company policy blocks
 the package. The Node runtime is an official Node.js distribution; the
-Commander launchers are project builds and are not publisher-signed.
+Commander launchers are project builds and are not publisher-signed. The
+CMD launchers stop before starting Node if NODE_OPTIONS or NODE_PATH is set.
+Ask IT to review a customized environment; keep company controls in place.
 
 FIRST TEST
 Double-click CHECK-USB.cmd. Read the prompt and enter CHECK. The self-test
@@ -39,5 +41,12 @@ STOP AND CLEAN UP
 Press Ctrl+C in the foreground agent console before removing the USB drive.
 There is no startup task or Windows service. The one-device credential and
 paired test workspaces are local to the Windows user, not on the USB drive.
-To retire a pairing, stop the agent and revoke the exact device ID in the
-owner's dashboard. The launcher prints the local pilot paths.
+Both the reusable device credential and paired dummy files remain on this
+PC after a paired session ends. To retire it, stop the agent, revoke the
+exact device ID in the owner's dashboard, then remove only this folder
+from the Windows user profile if your IT policy permits:
+
+    %LOCALAPPDATA%\JimmyRemoteCommander\usb-pilot
+
+Keep any other JimmyRemoteCommander folders. CHECK alone creates and
+cleans a separate temporary test directory and leaves no saved pairing.

@@ -110,6 +110,7 @@ async function start(prompts, local) {
   const credentialFile = join(state, 'agent.json');
   console.log('This foreground pilot lets the selected relay read and write one disposable text file.');
   console.log('Continue on a work PC only with approval to run the agent and connect to that relay.');
+  console.log('This PC keeps the device credential and each session’s pilot-check.txt after you stop. Cleanup instructions are in README.txt.');
   console.log(`Local device credential: ${credentialFile}`);
   if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
     throw new Error('Enable TLS certificate verification before pairing or connecting.');

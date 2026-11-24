@@ -40,8 +40,8 @@ const sandboxEnv = {
   PATHEXT:'.COM;.EXE;.BAT;.CMD',
 };
 const children = new Set();
-function launch(file, answers) {
-  const proc = spawn(comspec, ['/d', '/c', file], {cwd:pkg, env:sandboxEnv, stdio:'pipe'});
+function launch(file, answers, extraEnv = {}) {
+  const proc = spawn(comspec, ['/d', '/c', file], {cwd:pkg, env:{...sandboxEnv, ...extraEnv}, stdio:'pipe'});
   children.add(proc);
   let output = '';
   proc.stdout.on('data', d => { output += d.toString(); });
@@ -68,6 +68,14 @@ try {
   execFileSync(join(win,'System32','tar.exe'), ['-xf',zipPath,'-C',extract]);
   const runtime = join(pkg,'runtime','node.exe');
   assert.equal(execFileSync(runtime,['-p','process.version+" "+process.arch'],{cwd:pkg,env:sandboxEnv,encoding:'utf8'}).trim(),'v22.23.5 '+process.arch);
+  for (const entry of ['CHECK-USB.cmd', 'START-PILOT.cmd']) {
+    for (const env of [{NODE_OPTIONS:'--no-warnings'}, {NODE_PATH:join(root,'another module directory')}]) {
+      const guarded=launch(entry, [''], env);
+      assert.notEqual(await finished(guarded),0);
+      assert.match(guarded.output(), /NODE_OPTIONS|NODE_PATH/);
+      assert.deepEqual(await readdir(profile), []);
+    }
+  }
   const cancel = launch('CHECK-USB.cmd', ['']);
   assert.equal(await finished(cancel),0); assert.match(cancel.output(),/Cancelled/);
   assert.deepEqual(await readdir(profile), []);
