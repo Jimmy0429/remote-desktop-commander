@@ -125,6 +125,10 @@ const wantsFs = () => Boolean(JSON.parse(process.env.DC_STAND_INS ?? '{}').fs);
 
 /** Substitutes only the requested built-ins so installer tests cannot reach the network or real commands. */
 export async function resolve(specifier, context, next) {
+  // The historical setup/removal suites exercise the original package identity.
+  if (specifier === '#commander-package' && !JSON.parse(process.env.DC_STAND_INS).privateInstaller) {
+    return { url: 'data:application/json,{"name":"@wonderwhy-er/desktop-commander"}', shortCircuit: true };
+  }
   const name = STAND_INS[specifier];
   if (name) return { url: `dc-stand-in:${name}`, shortCircuit: true };
   if ((specifier === 'fs' || specifier === 'node:fs') && SCRIPT_FILE.test(context.parentURL ?? '') && wantsFs()) {

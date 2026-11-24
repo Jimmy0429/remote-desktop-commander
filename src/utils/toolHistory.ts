@@ -1,7 +1,7 @@
 import { ServerResult } from '../types.js';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { CONFIG_DIR } from '../config.js';
 
 export interface ToolCallRecord {
   timestamp: string;
@@ -63,7 +63,7 @@ class ToolHistory {
 
   constructor() {
     // Store history in same directory as config to keep everything together
-    const historyDir = path.join(os.homedir(), '.claude-server-commander');
+    const historyDir = CONFIG_DIR;
     
     // Ensure directory exists
     if (!fs.existsSync(historyDir)) {
@@ -275,8 +275,10 @@ class ToolHistory {
     const record: ToolCallRecord = {
       timestamp: new Date().toISOString(),
       toolName,
-      arguments: args,
-      output: this.capOutput(output),
+      arguments: process.env.JRC_SELF_HOSTED === '1' ? {} : args,
+      output: process.env.JRC_SELF_HOSTED === '1'
+        ? { content: [{ type: 'text', text: '[result omitted in self-hosted history]' }], ...(output.isError ? {isError:true} : {}) }
+        : this.capOutput(output),
       duration
     };
 

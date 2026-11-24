@@ -1,12 +1,6 @@
-// Release smoke check: the remote telemetry module loads from both installed
-// packages outside the checkout, where repository-local dependencies cannot hide
-// missing files. Builds and installs the npm tarball and the MCPB bundle; skips
-// the slow MCPB zip step and checks its file rules instead. No install hooks run,
-// telemetry is disabled, and all temporary files/processes are cleaned up.
-//
-// Needs a build and npm network access. Run through run-repro.js, which supplies
-// the overall timeout; this check reserves its last 15 seconds for cleanup.
-// Run: node test/repro/run-repro.js test-release-packages-load-telemetry.js
+// Install the private npm tarball outside the checkout and import its telemetry
+// module. Exercise the actual desktop archive through its separate integration test.
+// Run with a build and npm network access via run-repro.js.
 import { execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -15,7 +9,7 @@ import { createTempDir } from '../helpers/test-env.js';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ENTRY = path.join('dist', 'remote-device', 'transport-telemetry.js');
-const BUNDLE = path.join(PROJECT_ROOT, 'mcpb-bundle');
+const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8'));
 /** Stops itself this long before run-repro.js would kill it, so it can stop its own processes first */
 const OWN_LIMIT_MS = (Number(process.env.REPRO_TIMEOUT_MS) || 180_000) - 15_000;
 const deadline = Date.now() + OWN_LIMIT_MS;
@@ -30,19 +24,6 @@ const env = {
   DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1',
   PUPPETEER_SKIP_DOWNLOAD: '1',
 };
-
-// Loaded into build-mcpb.cjs (node --require): every command it runs runs as usual, except the zip
-const SKIP_PACK = `
-const childProcess = require('child_process');
-const execSync = childProcess.execSync;
-childProcess.execSync = (command, options) => {
-  if (/@anthropic-ai\\/mcpb pack /.test(command)) {
-    console.log('(repro) skipped: ' + command);
-    return Buffer.alloc(0);
-  }
-  return execSync(command, options);
-};
-`;
 
 // Import from the installed package in a fresh process, outside the checkout.
 const LOAD = `
@@ -76,10 +57,10 @@ function stopRunning() {
 }
 
 /** Runs a command (a shell line, or a program with args); resolves with its exit code and output */
-function run(command, args, cwd) {
+function run(command, args, cwd, environment = env) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd, env, shell: args.length === 0, detached: process.platform !== 'win32', windowsHide: true,
+      cwd, env: environment, shell: args.length === 0, detached: process.platform !== 'win32', windowsHide: true,
     });
     running = child;
     let stdout = '';
@@ -88,6 +69,7 @@ function run(command, args, cwd) {
     child.stdout.on('data', (data) => { stdout += data; output += data; });
     child.stderr.on('data', (data) => { output += data; });
     const timer = setTimeout(() => { late = true; stopRunning(); }, Math.max(0, deadline - Date.now()));
+    child.once('error', reject);
     child.on('close', (status) => {
       clearTimeout(timer);
       running = null;
@@ -127,46 +109,24 @@ async function npmPackage() {
   fs.writeFileSync(path.join(installDir, 'package.json'), JSON.stringify({ name: 'release-check', version: '1.0.0', private: true }));
   const install = await run(`npm install "${path.join(packDir, info.filename)}"`, [], installDir);
   console.log(`npm: the tarball installed in an empty folder, exit ${install.status}`);
-  if (install.status !== 0) console.log(why(install.output));
-  return loads('npm', path.join(installDir, 'node_modules', '@wonderwhy-er', 'desktop-commander'));
+  if (install.status !== 0) {
+    console.log(why(install.output));
+    return false;
+  }
+  return loads('npm', path.join(installDir, 'node_modules', pkg.name));
 }
 
-async function mcpbBundle() {
-  const script = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8')).scripts?.['build:mcpb'];
-  if (script !== 'node scripts/build-mcpb.cjs') {
-    console.log(`🔴 MCPB: build:mcpb is "${script}", not the script this repro runs`);
-    return false;
-  }
-  const preload = path.join(work, 'skip-mcpb-pack.cjs');
-  fs.writeFileSync(preload, SKIP_PACK);
-  const build = await run(process.execPath, ['--require', preload, path.join('scripts', 'build-mcpb.cjs')], PROJECT_ROOT);
-  if (build.status !== 0) {
-    console.log(`🔴 MCPB: build-mcpb.cjs failed (exit ${build.status})\n${why(build.output)}`);
-    return false;
-  }
-  // Out of the checkout, as the .mcpb is installed: inside it, Node would also find the checkout's own node_modules
-  const bundle = path.join(work, 'mcpb-bundle');
-  try {
-    fs.renameSync(BUNDLE, bundle);
-  } catch (error) {
-    if (error.code !== 'EXDEV') throw error;
-    fs.cpSync(BUNDLE, bundle, { recursive: true, verbatimSymlinks: true }); // the temporary folder is on another volume
-  }
-  console.log('MCPB: mcpb-bundle/ built (its zip step skipped), moved out of the checkout');
-
-  // Ensure the imported entry itself survives MCPB's packaging rules.
-  const { readMcpbIgnorePatterns, shouldExclude } = await import('@anthropic-ai/mcpb/node');
-  const patterns = readMcpbIgnorePatterns(bundle);
-  const entryPath = ENTRY.split(path.sep).join('/');
-  const excluded = entryPath.split('/').some((_, i, parts) => shouldExclude(parts.slice(0, i + 1).join('/'), patterns));
-  console.log(`     mcpb pack includes telemetry entry: ${!excluded}`);
-  const loaded = await loads('MCPB', bundle);
-  return loaded && !excluded;
+async function desktopArchive() {
+  // The repro runner launches this script in its own node:test child. A nested
+  // node --test inherits that marker and skips discovery unless we remove it.
+  const { NODE_TEST_CONTEXT, ...testEnv } = env;
+  const result = await run(process.execPath, ['--test', 'test/test-self-host-desktop-package.js'], PROJECT_ROOT, testEnv);
+  process.stdout.write(result.output);
+  return result.status === 0;
 }
 
 function cleanUp() {
   stopRunning();
-  fs.rmSync(BUNDLE, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
@@ -184,7 +144,7 @@ if (!fs.existsSync(path.join(PROJECT_ROOT, ENTRY))) {
 }
 try {
   const npmOk = await npmPackage();
-  const mcpbOk = await mcpbBundle();
+  const mcpbOk = await desktopArchive();
   process.exitCode = npmOk && mcpbOk ? 0 : 1;
 } catch (error) {
   console.log(`🔴 stopped: ${error.message}; the processes it started are stopped`);

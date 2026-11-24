@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 // Config tools schemas
 export const GetConfigArgsSchema = z.object({
@@ -118,7 +118,7 @@ export const WritePdfArgsSchema = z.object({
     },
     z.union([z.string(), z.array(PdfOperationSchema)])
   ),
-  outputPath: z.string().optional(),
+  outputPath: z.string().optional().describe('Required for page operations. Choose a new filename that does not already exist.'),
   options: z.object({}).passthrough().optional(), // Allow passing options to md-to-pdf
 });
 
@@ -157,7 +157,7 @@ export const EditBlockArgsSchema = z.object({
   // Structured file range rewrite (Excel, etc.)
   range: z.string().optional(),
   content: z.any().optional(),
-  options: z.record(z.any()).optional(),
+  options: z.record(z.any()).optional().describe('Format-specific options. Private PDF page edits require outputPath to name a fresh file.'),
   // 'ui' when fired by the file-preview UI, else 'llm'. 'ui' calls are
   // excluded from tool-call telemetry; see isUiOriginCall in server.ts.
   origin: z.enum(['ui', 'llm']).optional(),

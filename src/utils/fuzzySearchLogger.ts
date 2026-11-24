@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { CONFIG_DIR } from '../config.js';
 
 export interface FuzzySearchLogEntry {
     timestamp: Date;
@@ -27,7 +28,7 @@ class FuzzySearchLogger {
 
     constructor() {
         // Create log file in a dedicated directory
-        const logDir = path.join(os.homedir(), '.claude-server-commander-logs');
+        const logDir = process.env.JRC_CONFIG_DIR ? path.join(CONFIG_DIR, 'logs') : path.join(os.homedir(), '.claude-server-commander-logs');
         this.logPath = path.join(logDir, 'fuzzy-search.log');
     }
 
@@ -73,6 +74,7 @@ class FuzzySearchLogger {
     }
 
     async log(entry: FuzzySearchLogEntry): Promise<void> {
+        if (process.env.JRC_SELF_HOSTED === '1') return;
         try {
             await this.ensureLogFile();
             

@@ -12,7 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import { configManager } from '../dist/config-manager.js';
 import { handleEditBlock } from '../dist/tools/edit.js';
-import { SAMPLE_PDF, SIMPLE_PDF, answerText, pdfWorkspace } from './helpers/pdf.js';
+import { SAMPLE_PDF, SIMPLE_PDF, answerText, pageSizes, pdfWorkspace } from './helpers/pdf.js';
 import { isTestHome } from './helpers/test-env.js';
 import { runIfMain, skip } from './helpers/run-if-main.js';
 
@@ -61,12 +61,20 @@ async function run() {
       const result = await handleEditBlock({ file_path: pdf, range: 'p', content: [{ type: 'delete', pageIndexes: [0] }], options: { outputPath: out } });
       assert(!result.isError && fs.existsSync(out), `the edit inside the allowed folders failed: ${answerText(result)}`);
     });
+
+    await check('standalone edit_block can still explicitly edit a PDF in place', async () => {
+      const pdf = path.join(ws.allowed, 'in-place.pdf');
+      fs.copyFileSync(SAMPLE_PDF, pdf);
+      const result = await handleEditBlock({ file_path: pdf, range: 'p', content: [{ type: 'delete', pageIndexes: [0] }] });
+      assert(!result.isError, answerText(result));
+      assert.equal((await pageSizes(pdf)).length, 21);
+    });
   } finally {
     await configManager.setValue('allowedDirectories', originalAllowed ?? []);
     ws.cleanup();
   }
   if (failures.length > 0) {
-    console.log(`${failures.length} of 3 cases failed`);
+    console.log(`${failures.length} of 4 cases failed`);
     return false;
   }
   return true;

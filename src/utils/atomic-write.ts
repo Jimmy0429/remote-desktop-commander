@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'path';
 import { renameWithRetry } from './rename.js';
 import { logger } from './logger.js';
@@ -88,4 +89,26 @@ export function writeFileAtomic(filePath: string, data: string | Uint8Array, opt
   }).catch(() => {});
 
   return write;
+}
+
+/** Publish complete bytes under a new name. link() cannot replace a competing writer's file. */
+export async function writeNewFileAtomic(filePath: string, data: Uint8Array): Promise<void> {
+  const directory = path.dirname(filePath);
+  const temporary = path.join(directory, `.commander-${randomUUID()}.tmp`);
+  const handle = await fs.open(temporary, 'wx');
+  try {
+    try {
+      await handle.writeFile(data);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.link(temporary, filePath);
+  } finally {
+    // Once linked, the destination is complete even if cleanup fails.
+    await fs.unlink(temporary).catch(() => {
+      logger.error('Could not remove the temporary file after new-file publication.');
+    });
+  }
+  await syncFolder(directory);
 }

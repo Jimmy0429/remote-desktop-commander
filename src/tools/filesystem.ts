@@ -7,12 +7,15 @@ import { promisify } from 'util';
 import { addToolCallPaths, capture } from '../utils/capture.js';
 import { withTimeout, runWithAbortableTimeout } from '../utils/withTimeout.js';
 import { configManager } from '../config-manager.js';
+import { SELF_HOSTED_ENGINE, SELF_HOSTED_WORKSPACE } from '../config.js';
 import { getFileHandler, TextFileHandler, isImageAnswer } from '../utils/files/index.js';
 import type { ReadOptions, FileResult, FileInfo, PdfPageItem } from '../utils/files/base.js';
 import { isPdfFile } from "./mime-types.js";
 import { parsePdfToMarkdown, editPdf, insertRenderOptions, PdfOperations, PdfMetadata, parseMarkdownToPdf, resolveRender, IgnoredRenderOption } from './pdf/index.js';
 import { isBinaryFile } from 'isbinaryfile';
 import { movePath } from '../utils/rename.js';
+import { writeNewFileAtomic } from '../utils/atomic-write.js';
+import { withFileMutation } from '../utils/file-mutation.js';
 
 // CONSTANTS SECTION - Consolidate all timeouts and thresholds
 const FILE_OPERATION_TIMEOUTS = {
@@ -113,6 +116,12 @@ async function getAllowedDirs(): Promise<string[]> {
     try {
         let allowedDirectories;
         const config = await configManager.getConfig();
+        if (SELF_HOSTED_ENGINE) {
+            const dirs = config.allowedDirectories;
+            if (!Array.isArray(dirs) || !dirs.every(dir =>
+                typeof dir === 'string' && path.isAbsolute(expandHome(dir)))) return [];
+            return dirs;
+        }
         if (config.allowedDirectories && Array.isArray(config.allowedDirectories)) {
             allowedDirectories = config.allowedDirectories;
         } else {
@@ -287,9 +296,20 @@ function isWithinAllowedDir(normalizedPathToCheck: string, allowedDir: string): 
  * @param pathToCheck Path to check
  * @returns boolean True if path is allowed
  */
-async function isPathAllowed(pathToCheck: string): Promise<boolean> {
+async function isPathAllowed(pathToCheck: string, allowedDirectories: string[]): Promise<boolean> {
+    if (SELF_HOSTED_ENGINE) {
+        if (!SELF_HOSTED_WORKSPACE || !allowedDirectories.length ||
+            !await isInPrivateDirectory(pathToCheck, SELF_HOSTED_WORKSPACE)) return false;
+        // Each local allowance is intersected with the immutable workspace.
+        // Resolve its own path as well, including any configured junctions.
+        for (const directory of allowedDirectories) {
+            if (directory === SELF_HOSTED_WORKSPACE) return true;
+            const realDirectory = await getAllowedDirRealPath(directory);
+            if (realDirectory && await isInPrivateDirectory(pathToCheck, realDirectory)) return true;
+        }
+        return false;
+    }
     // If root directory is allowed, all paths are allowed
-    const allowedDirectories = await getAllowedDirs();
     if (allowedDirectories.includes('/') || allowedDirectories.length === 0) {
         return true;
     }
@@ -320,6 +340,24 @@ async function isPathAllowed(pathToCheck: string): Promise<boolean> {
             });
         }
     });
+}
+
+/** Both paths are already resolved. A spelling differing only by case is
+ * accepted only if both directory names refer to the same filesystem object.
+ * Case sensitivity can vary between directories on the same Windows volume. */
+async function isInPrivateDirectory(target: string, directory: string): Promise<boolean> {
+    const root = path.resolve(directory);
+    const prefix = target.slice(0, root.length);
+    if (target.length > root.length && !root.endsWith(path.sep) && target[root.length] !== path.sep) return false;
+    if (prefix === root) return true;
+    if (prefix.toLowerCase() !== root.toLowerCase()) return false;
+    try {
+        const [left, right] = await Promise.all([prefix, root].map(name => fs.lstat(name, { bigint: true })));
+        return left.isDirectory() && right.isDirectory() && left.ino !== 0n &&
+            left.ino === right.ino && left.dev === right.dev;
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -371,13 +409,17 @@ export async function validatePath(requestedPath: string, { entry = false }: { e
         addToolCallPaths(pathForNextCheck);
 
         // Check if path is allowed
-        if (!(await isPathAllowed(pathForNextCheck))) {
+        const allowedDirectories = await getAllowedDirs();
+        if (!(await isPathAllowed(pathForNextCheck, allowedDirectories))) {
             capture('server_path_validation_error', {
                 error: 'Path not allowed',
-                allowedDirsCount: (await getAllowedDirs()).length
+                allowedDirsCount: allowedDirectories.length
             });
 
-            throw new Error(`Path not allowed: ${requestedPath}. Must be within one of these directories: ${(await getAllowedDirs()).join(', ')}`);
+            if (SELF_HOSTED_ENGINE) {
+                throw new Error(`Path not allowed: ${requestedPath}. File tools require the selected workspace and a matching configured directory.`);
+            }
+            throw new Error(`Path not allowed: ${requestedPath}. Must be within one of these directories: ${allowedDirectories.join(', ')}`);
         }
 
         // SECURITY: Always return the resolved path (with symlinks resolved) so that
@@ -717,6 +759,13 @@ export async function readFileInternal(filePath: string, offset: number = 0, len
 
 export async function writeFile(filePath: string, content: string, mode: 'rewrite' | 'append' = 'rewrite'): Promise<void> {
     const validPath = await validatePath(filePath);
+    return withFileMutation([validPath], () => writeFileUnderLock(validPath, content, mode));
+}
+
+/** Write while holding the mutation for this canonical path; recheck access after waiting. */
+export async function writeFileUnderLock(filePath: string, content: string, mode: 'rewrite' | 'append' = 'rewrite'): Promise<void> {
+    const validPath = await validatePath(filePath);
+    if (validPath !== filePath) throw new Error('File target changed before the write could commit.');
 
     // Get file extension for telemetry
     const fileExtension = getFileExtension(validPath);
@@ -1088,15 +1137,28 @@ export async function getFileInfo(filePath: string): Promise<Record<string, any>
  * so both check here. An inserted PDF's path is replaced by its validated path.
  *
  * @param validPath The PDF the operations apply to, already validated
- * @returns Where to write the result: outputPath if provided, otherwise the PDF itself
+ * @returns Where to write the result. Only standalone edit_block permits in-place editing.
  */
 export async function validatePdfOperationPaths(
     validPath: string,
     operations: PdfOperations[],
-    outputPath?: string
+    outputPath?: string,
+    requireNewOutput = false
 ): Promise<string> {
-    // Use outputPath if provided, otherwise overwrite input file
-    const targetPath = outputPath ? await validatePath(outputPath) : validPath;
+    if (requireNewOutput && !outputPath) {
+        throw new Error('PDF page operations require a new outputPath. Choose a filename that does not exist.');
+    }
+    // New outputs address the directory entry itself, including a dangling link.
+    // Standalone edit_block may still follow a validated output link.
+    const targetPath = outputPath ? await validatePath(outputPath, { entry: requireNewOutput }) : validPath;
+    if (requireNewOutput) {
+        try {
+            await fs.lstat(targetPath);
+            throw new Error('PDF outputPath already exists. Choose a new filename.');
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+    }
 
     // Validate paths in operations
     for (const o of operations) {
@@ -1107,6 +1169,57 @@ export async function validatePdfOperationPaths(
         }
     }
     return targetPath;
+}
+
+async function recheckPdfPath(target: string, entry = false): Promise<void> {
+    if (await validatePath(target, { entry }) !== target) {
+        throw new Error('PDF path changed while waiting to use it. Check the paths and try again.');
+    }
+}
+
+/** Apply a page operation under one reservation for its source, inserts and destination. */
+export async function applyPdfPageEdits(
+    filePath: string,
+    content: PdfOperations[],
+    outputPath?: string,
+    requireNewOutput = false,
+    renderOptions: Record<string, any> = {},
+): Promise<string> {
+    const source = await validatePath(filePath);
+    // Validation resolves insert paths. Do not modify the caller's request.
+    const operations = content.map(operation => ({ ...operation }));
+    const target = await validatePdfOperationPaths(source, operations, outputPath, requireNewOutput);
+    const inputs = new Set([source]);
+    for (const operation of operations) {
+        if (operation.type === 'insert' && operation.sourcePdfPath) inputs.add(operation.sourcePdfPath);
+    }
+
+    return withFileMutation([...inputs, target], async () => {
+        for (const input of inputs) await recheckPdfPath(input);
+        await recheckPdfPath(target, requireNewOutput);
+        const bytes = await editPdf(source, operations, renderOptions);
+        await recheckPdfPath(target, requireNewOutput);
+        if (!requireNewOutput) {
+            await fs.writeFile(target, bytes);
+            return target;
+        }
+        // Exclusive publication also protects against other processes that
+        // create the destination after validation or while the PDF is rendering.
+        try {
+            await writeNewFileAtomic(target, bytes);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EEXIST') throw new Error('PDF outputPath already exists. Choose a new filename.');
+            if (code === 'EPERM' || code === 'EACCES') {
+                throw new Error(`Could not publish a new PDF (${code}). Check access to the destination folder.`);
+            }
+            if (code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'EXDEV' || code === 'ENOSYS') {
+                throw new Error(`Could not publish a new PDF (${code}). Choose a filesystem that supports hard links, such as local NTFS on Windows.`);
+            }
+            throw error;
+        }
+        return target;
+    });
 }
 
 /**
@@ -1135,34 +1248,30 @@ export async function writePdf(
             mode: 'create'
         });
 
-        const pdfBuffer = await parseMarkdownToPdf(content, options);
-        // Use outputPath if provided, otherwise overwrite input file
         const targetPath = outputPath ? await validatePath(outputPath) : validPath;
-        await fs.writeFile(targetPath, pdfBuffer);
+        await withFileMutation([targetPath], async () => {
+            await recheckPdfPath(targetPath);
+            const pdfBuffer = await parseMarkdownToPdf(content, options);
+            await recheckPdfPath(targetPath);
+            await fs.writeFile(targetPath, pdfBuffer);
+        });
         // The render succeeded; report which of the caller's/front matter's options were ignored
         return resolveRender(content, options).ignoredOptions;
     } else if (Array.isArray(content)) {
 
-        const targetPath = await validatePdfOperationPaths(validPath, content, outputPath);
-        const operations: PdfOperations[] = [...content];
-
         capture('server_write_pdf', {
             fileExtension: fileExtension,
-            operationCount: operations.length,
+            operationCount: content.length,
             mode: 'modify',
-            deleteCount: operations.filter(op => op.type === 'delete').length,
-            insertCount: operations.filter(op => op.type === 'insert').length
+            deleteCount: content.filter(op => op.type === 'delete').length,
+            insertCount: content.filter(op => op.type === 'insert').length
         });
 
-        // Perform the PDF editing (options render the inserted markdown pages)
-        const modifiedPdfBuffer = await editPdf(validPath, operations, options);
-
-        // Write the modified PDF to the output path
-        await fs.writeFile(targetPath, modifiedPdfBuffer);
+        await applyPdfPageEdits(validPath, content, outputPath, true, options);
 
         // Report the options ignored in any inserted page's render options or front matter (once per option)
         const ignored = new Map<string, IgnoredRenderOption>();
-        for (const op of operations) {
+        for (const op of content) {
             if (op.type === 'insert' && op.markdown !== undefined) {
                 for (const ignoredOption of resolveRender(op.markdown, insertRenderOptions(op, options)).ignoredOptions) {
                     ignored.set(ignoredOption.option, ignoredOption);

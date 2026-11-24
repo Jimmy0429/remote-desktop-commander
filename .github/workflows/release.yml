@@ -121,6 +121,8 @@ jobs:
   # writes to origin. The .mcpb and the bumped version files cross to the
   # publish job as an artifact — a separate runner shares no filesystem.
   prepare:
+    # The public release pipeline belongs to the upstream project.
+    if: github.repository == 'wonderwhy-er/DesktopCommanderMCP'
     runs-on: ubuntu-latest
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
@@ -390,6 +392,7 @@ jobs:
   # the version, so a re-run never double-publishes.
   publish:
     needs: prepare
+    if: github.repository == 'wonderwhy-er/DesktopCommanderMCP'
     runs-on: ubuntu-latest
     env:
       MODE: ${{ needs.prepare.outputs.mode }}

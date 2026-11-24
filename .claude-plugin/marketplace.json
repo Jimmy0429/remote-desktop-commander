@@ -1,20 +1,17 @@
 {
-  "name": "desktop-commander",
-  "displayName": "Desktop Commander",
+  "name": "jimmy-private-tools",
   "owner": {
-    "name": "Desktop Commander",
-    "email": "es@desktopcommander.app"
+    "name": "Jimmy0429"
   },
   "metadata": {
-    "description": "MCP server for terminal, command-line access, process management, and file operations across text, code, PDF, DOCX, Excel, images, and structured data",
-    "version": "0.2.0"
+    "description": "Private MCP tools for your paired computers.",
+    "version": "0.3.4"
   },
   "plugins": [
     {
-      "name": "desktop-commander",
-      "displayName": "Desktop Commander",
-      "source": "./plugins/claude",
-      "description": "MCP server for terminal shell commands, process management, and file operations across text, coding, PDF, DOCX, Excel, images, and structured data"
+      "name": "jimmy-remote-commander",
+      "source": "./plugins/private",
+      "description": "Connect an AI client to your private server to work with files and terminal sessions on an explicitly selected computer."
     }
   ]
 }

@@ -24,6 +24,7 @@ export class FilteredStdioServerTransport extends StdioServerTransport {
     info: typeof console.info;
   };
   private originalStdoutWrite: typeof process.stdout.write;
+  private rawStdoutWrite: typeof process.stdout.write;
   private isInitialized: boolean = false;
   private messageBuffer: Array<{
     level: "emergency" | "alert" | "critical" | "error" | "warning" | "notice" | "info" | "debug";
@@ -33,8 +34,11 @@ export class FilteredStdioServerTransport extends StdioServerTransport {
   private clientName: string = 'unknown';
   private disableNotifications: boolean = false;
 
-  constructor() {
+  constructor(private readonly maxOutputBytes?: number) {
     super();
+    if (maxOutputBytes !== undefined && (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0)) {
+      throw new RangeError('maxOutputBytes must be a positive safe integer');
+    }
     
     // Store original methods
     this.originalConsole = {
@@ -45,7 +49,12 @@ export class FilteredStdioServerTransport extends StdioServerTransport {
       info: console.info,
     };
     
-    this.originalStdoutWrite = process.stdout.write;
+    this.rawStdoutWrite = process.stdout.write;
+    // Notification helpers also use this writer, so none can bypass the limit.
+    // Without a limit the upstream transport retains its original behavior.
+    this.originalStdoutWrite = maxOutputBytes === undefined
+      ? this.rawStdoutWrite
+      : (buffer: any, encoding?: any, callback?: any): boolean => this.writeBounded(buffer, encoding, callback);
     
     // Setup console redirection
     this.setupConsoleRedirection();
@@ -55,6 +64,55 @@ export class FilteredStdioServerTransport extends StdioServerTransport {
     
     // Note: We defer the initialization notification until enableNotifications() is called
     // to ensure MCP protocol compliance - notifications must not be sent before initialization
+  }
+
+  /** Keep an oversized tool result from terminating the self-hosted MCP client. */
+  private writeBounded(buffer: any, encoding?: any, callback?: any): boolean {
+    const textEncoding: BufferEncoding = typeof encoding === 'string' ? encoding as BufferEncoding : 'utf8';
+    const bytes = typeof buffer === 'string'
+      ? Buffer.byteLength(buffer, textEncoding)
+      : buffer instanceof Uint8Array ? buffer.byteLength : undefined;
+    if (bytes === undefined || bytes <= this.maxOutputBytes!) {
+      return this.rawStdoutWrite.call(process.stdout, buffer, encoding, callback);
+    }
+
+    const done = typeof encoding === 'function' ? encoding : callback;
+    let replacement: string | undefined;
+    try {
+      const message = JSON.parse(typeof buffer === 'string' ? buffer : Buffer.from(buffer).toString('utf8'));
+      if (message?.jsonrpc === '2.0' && (typeof message.id === 'string' || typeof message.id === 'number')) {
+        if (Array.isArray(message.result?.content)) {
+          replacement = JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: 'Operation executed, but the result is too large to return. Request a smaller portion of the output; do not repeat operations that change state.',
+              }],
+              structuredContent: { execution: 'completed', errorCode: 'result_too_large' },
+            },
+          }) + '\n';
+        } else if ('result' in message || 'error' in message) {
+          replacement = JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            error: { code: -32603, message: 'Response is too large to return' },
+          }) + '\n';
+        }
+      }
+    } catch {
+      // Oversized malformed output is not a protocol response; safely discard it.
+    }
+
+    if (replacement !== undefined && Buffer.byteLength(replacement) <= this.maxOutputBytes!) {
+      return this.rawStdoutWrite.call(process.stdout, replacement, 'utf8', done);
+    }
+    // Notifications and non-RPC data have no awaiting request to answer. A
+    // dropped write must still complete its callback and must not await drain.
+    if (typeof done === 'function') process.nextTick(done);
+    return true;
   }
 
   /**
@@ -212,7 +270,10 @@ export class FilteredStdioServerTransport extends StdioServerTransport {
               timestamp: Date.now()
             });
           }
-          if (callback) callback();
+          if (this.maxOutputBytes !== undefined) {
+            const done = typeof encoding === 'function' ? encoding : callback;
+            if (typeof done === 'function') process.nextTick(done);
+          } else if (callback) callback();
           return true;
         }
       }
@@ -403,8 +464,8 @@ export class FilteredStdioServerTransport extends StdioServerTransport {
       console.info = this.originalConsole.info;
     }
     
-    if (this.originalStdoutWrite) {
-      process.stdout.write = this.originalStdoutWrite;
+    if (this.rawStdoutWrite) {
+      process.stdout.write = this.rawStdoutWrite;
     }
   }
 }

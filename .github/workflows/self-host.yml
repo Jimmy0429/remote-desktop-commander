@@ -1,0 +1,253 @@
+name: Self-hosted remote
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'test/test-self-host-*.js'
+      - 'scripts/build-ui-runtime.cjs'
+      - 'scripts/build-mcpb.cjs'
+      - 'scripts/sync-version.js'
+      - 'test/test-root-mcpb-manifest.js'
+      - 'test/test-package-ships-local-deps.js'
+      - 'test/test-release-alpha-promotion.js'
+      - 'setup-claude-server.js'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'manifest*.json'
+      - 'plugins/private/**'
+      - '.claude-plugin/**'
+      - '.cursor-plugin/**'
+      - '.mcp.json'
+      - 'plugin.json'
+      - 'gemini-extension.json'
+      - 'scripts/run-self-host-tests.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'docs/self-hosted.md'
+      - 'deploy/self-host/**'
+      - '.dockerignore'
+      - '.github/workflows/self-host.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'test/test-self-host-*.js'
+      - 'scripts/build-ui-runtime.cjs'
+      - 'scripts/build-mcpb.cjs'
+      - 'scripts/sync-version.js'
+      - 'test/test-root-mcpb-manifest.js'
+      - 'test/test-package-ships-local-deps.js'
+      - 'test/test-release-alpha-promotion.js'
+      - 'setup-claude-server.js'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'manifest*.json'
+      - 'plugins/private/**'
+      - '.claude-plugin/**'
+      - '.cursor-plugin/**'
+      - '.mcp.json'
+      - 'plugin.json'
+      - 'gemini-extension.json'
+      - 'scripts/run-self-host-tests.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'docs/self-hosted.md'
+      - 'deploy/self-host/**'
+      - '.dockerignore'
+      - '.github/workflows/self-host.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-host:
+    name: Node 22 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Install the agent search binary
+        run: npm rebuild @vscode/ripgrep
+        env:
+          # The package installer uses GitHub release downloads. This read-only
+          # token avoids anonymous API limits on shared runners.
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Build
+        run: npm run build
+      - name: Verify the search binary
+        run: node dist/npm-scripts/verify-ripgrep.js
+      - name: Verify private plugin and package metadata
+        run: node --test test/test-root-mcpb-manifest.js test/test-package-ships-local-deps.js test/test-release-alpha-promotion.js
+      - name: Run the self-host suite
+        run: npm run test:self-host
+
+  container:
+    name: Docker server / Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build and verify the private server image
+        shell: bash
+        env:
+          JRC_SMOKE_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          image="jrc-smoke:${JRC_SMOKE_ID}"
+          volume="jrc-smoke-${JRC_SMOKE_ID}"
+          container="jrc-smoke-${JRC_SMOKE_ID}"
+          smoke_script="${RUNNER_TEMP}/jrc-docker-smoke-${JRC_SMOKE_ID}.mjs"
+          cleanup() {
+            docker rm -f "$container" "${container}-init" "${container}-contender" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+            docker image rm "$image" >/dev/null 2>&1 || true
+            rm -f "$smoke_script" "${smoke_script}.contender-log"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          docker build --file deploy/self-host/Dockerfile --tag "$image" .
+          test "$(docker image inspect --format '{{.Config.User}}' "$image")" = node
+          docker volume create "$volume" >/dev/null
+          docker run --rm --name "${container}-init" --network none \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=volume,source=${volume},target=/data" \
+            "$image" init --data-dir /data >/dev/null
+
+          # The credential is read only inside the container. Never print tokens,
+          # pairing codes, response bodies, or private volume contents to CI logs.
+          cat > "$smoke_script" <<'NODE'
+          import { readFileSync, writeFileSync, statSync } from 'node:fs';
+          import { setTimeout as delay } from 'node:timers/promises';
+          import { request as httpRequest } from 'node:http';
+          function check(condition, message) { if (!condition) throw new Error(message); }
+          check(process.getuid() !== 0, 'Server image must run as a non-root user.');
+          check((statSync('/data/owner-token').mode & 0o777) === 0o600, 'Owner token permissions must be 600.');
+          const ownerToken = readFileSync('/data/owner-token', 'utf8').trim();
+          const base = 'http://127.0.0.1:8787';
+          const host = 'commander.test';
+          async function request(path, { owner = false, body, requestHost = host } = {}) {
+            const encoded = body === undefined ? undefined : JSON.stringify(body);
+            // fetch may replace Host on newer Node versions. This probe must send
+            // the configured public Host while connecting through container loopback.
+            return new Promise((resolve, reject) => {
+              const req = httpRequest(base + path, {
+                method: encoded === undefined ? 'GET' : 'POST',
+                headers: {
+                  Host: requestHost,
+                  ...(owner ? { Authorization: 'Bearer ' + ownerToken } : {}),
+                  ...(encoded === undefined ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(encoded) }),
+                },
+                signal: AbortSignal.timeout(1000),
+              }, response => {
+                const chunks = [];
+                let bytes = 0;
+                response.on('data', chunk => {
+                  bytes += chunk.length;
+                  if (bytes > 1024 * 1024) { req.destroy(new Error('Smoke response exceeded its size limit.')); return; }
+                  chunks.push(chunk);
+                });
+                response.once('error', reject);
+                response.once('end', () => resolve({
+                  status: response.statusCode,
+                  json: async () => {
+                    try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+                    catch { throw new Error('Smoke response was not valid JSON.'); }
+                  },
+                }));
+              });
+              req.once('error', reject);
+              req.end(encoded);
+            });
+          }
+          let ready = false;
+          for (let attempt = 0; attempt < 30; attempt++) {
+            try {
+              const response = await request('/health');
+              if (response.status === 200 && (await response.json()).status === 'ok') { ready = true; break; }
+            } catch { /* Server startup is allowed a bounded readiness window. */ }
+            await delay(1000);
+          }
+          check(ready, 'Container health did not become ready within the polling deadline.');
+          check((await request('/api/devices')).status === 401, 'Protected API must reject a missing owner token.');
+          check((await request('/health', { requestHost: 'wrong.test' })).status === 403, 'Unexpected Host must be rejected.');
+          if (process.argv[2] === 'initial') {
+            const pairingResponse = await request('/api/pairings', { owner: true, body: {} });
+            check(pairingResponse.status === 200, 'Owner pairing request failed.');
+            const pairing = await pairingResponse.json();
+            const enrollmentResponse = await request('/api/enroll', { body: { code: pairing.code, name: 'Container smoke fixture', platform: 'linux' } });
+            check(enrollmentResponse.status === 200, 'Fixture enrollment failed.');
+            const enrollment = await enrollmentResponse.json();
+            check(typeof enrollment.deviceId === 'string', 'Enrollment did not return a device ID.');
+            writeFileSync('/data/smoke-device-id', enrollment.deviceId, { flag: 'wx', mode: 0o600 });
+          }
+          const deviceResponse = await request('/api/devices', { owner: true });
+          check(deviceResponse.status === 200, 'Owner credential did not authorize the request.');
+          const { devices } = await deviceResponse.json();
+          const expectedId = readFileSync('/data/smoke-device-id', 'utf8');
+          check(devices.some(device => device.id === expectedId && device.name === 'Container smoke fixture'), 'Enrolled device was not retained on the persistent volume.');
+          console.log('Container checks passed: non-root, private credential, health, authorization, host validation, and persistent enrollment.');
+          NODE
+
+          start_container() {
+            # No published ports or external network; all probes use container loopback.
+            docker run --detach --name "$container" --init --network none \
+              --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+              --cap-drop ALL --security-opt no-new-privileges \
+              --mount "type=volume,source=${volume},target=/data" \
+              "$image" serve --data-dir /data --host 127.0.0.1 \
+              --public-url https://commander.test >/dev/null
+          }
+          start_container
+          docker exec --interactive "$container" node --input-type=module - initial < "$smoke_script"
+          # A second process sharing the local named volume must not become a writer.
+          if docker run --rm --name "${container}-contender" --network none \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=volume,source=${volume},target=/data" \
+            "$image" serve --data-dir /data > "${smoke_script}.contender-log" 2>&1; then
+            printf '%s\n' 'A competing server unexpectedly acquired the data directory.'
+            exit 1
+          fi
+          grep -q 'locked' "${smoke_script}.contender-log"
+          docker stop --time 15 "$container" >/dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
+          docker rm "$container" >/dev/null
+          start_container
+          docker exec --interactive "$container" node --input-type=module - restarted < "$smoke_script"
+          # Kernel locks must recover after a crash without deleting lock/state files.
+          docker kill --signal KILL "$container" >/dev/null
+          test "$(docker wait "$container")" = 137
+          docker rm "$container" >/dev/null
+          start_container
+          docker exec --interactive "$container" node --input-type=module - after-crash < "$smoke_script"
+          docker stop --time 15 "$container" >/dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0

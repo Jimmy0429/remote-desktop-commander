@@ -12,11 +12,26 @@ const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
 
 test('repository root contains a stable, valid MCPB manifest snapshot', () => {
     const manifest = json(path.join(root, 'manifest.json'));
+    const pkg = json(path.join(root, 'package.json'));
+    const registry = json(path.join(root, 'server.json'));
+    assert.equal(pkg.private, true);
+    assert.equal(pkg.mcpName, 'io.github.jimmy0429/remote-desktop-commander');
+    assert.equal(registry.name, pkg.mcpName);
+    assert.equal(registry.repository.url, manifest.repository.url);
+    assert.deepEqual(registry.packages ?? [], []);
     assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-    assert.equal(manifest.name, 'desktop-commander');
+    assert.equal(manifest.name, 'jimmy-remote-commander');
     assert.equal(manifest.manifest_version, '0.3');
     assert.equal(manifest.server.type, 'node');
-    assert.equal(manifest.server.entry_point, 'dist/index.js');
+    assert.equal(manifest.server.entry_point, 'bridge.cjs');
+    assert.deepEqual(manifest.server.mcp_config, {
+        command: 'node',
+        args: ['${__dirname}/bridge.cjs', '${user_config.server_url}', '${user_config.credential_file}']
+    });
+    assert.equal(manifest.user_config.server_url.required, true);
+    assert.equal(manifest.user_config.credential_file.type, 'file');
+    assert.equal(manifest.user_config.credential_file.required, true);
+    assert.equal(manifest.tools_generated, true);
     // The template's build-relative schema path does not resolve at repo root.
     assert.equal(Object.hasOwn(manifest, '$schema'), false);
 
@@ -43,10 +58,7 @@ test('version sync keeps alpha private and refreshes root manifest for stable re
         writeFileSync(path.join(tmp, 'manifest.template.json'), template);
         writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify(stable, null, 2) + '\n');
         writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({ version: '0.3.2-alpha.1' }));
-        writeFileSync(path.join(tmp, 'server.json'), JSON.stringify({
-            version: '0.3.1',
-            packages: [{ registryType: 'npm', identifier: '@wonderwhy-er/desktop-commander', version: '0.3.1' }]
-        }));
+        writeFileSync(path.join(tmp, 'server.json'), JSON.stringify({ version: '0.3.1' }));
 
         const runSync = () => execFileSync(
             process.execPath,
@@ -65,7 +77,7 @@ test('version sync keeps alpha private and refreshes root manifest for stable re
         delete expected.$schema;
         assert.deepEqual(json(path.join(tmp, 'manifest.json')), expected);
         assert.equal(json(path.join(tmp, 'server.json')).version, '0.3.2');
-        assert.equal(json(path.join(tmp, 'server.json')).packages[0].version, '0.3.2');
+        assert.equal(json(path.join(tmp, 'server.json')).packages, undefined);
         assert.equal(readFileSync(path.join(tmp, 'src/version.ts'), 'utf8'),
             "export const VERSION = '0.3.2';\n");
     } finally {

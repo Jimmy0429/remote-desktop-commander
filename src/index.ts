@@ -7,6 +7,8 @@ import { FilteredStdioServerTransport } from './custom-stdio.js';
 import { server, flushDeferredMessages } from './server.js';
 import { commandManager } from './command-manager.js';
 import { configManager } from './config-manager.js';
+import { SELF_HOSTED_ENGINE, SELF_HOSTED_WORKSPACE } from './config.js';
+import path from 'node:path';
 import { featureFlagManager } from './utils/feature-flags.js';
 import { runSetup } from './npm-scripts/setup.js';
 import { runUninstall } from './npm-scripts/uninstall.js';
@@ -16,6 +18,10 @@ import { exitProcess } from './utils/exit-process.js';
 import { runRemote } from './npm-scripts/remote.js';
 import { ensureChromeAvailable } from './tools/pdf/markdown.js';
 import { preloadFileSupport } from './utils/files/index.js';
+import { terminalManager } from './terminal-manager.js';
+import { searchManager } from './search-manager.js';
+import { toolHistory } from './utils/toolHistory.js';
+import { MAX_MESSAGE_BYTES } from './self-host/protocol.js';
 
 // Store messages to defer until after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -44,7 +50,7 @@ async function runServer() {
     }
 
     // Parse command line arguments for onboarding control
-    const DISABLE_ONBOARDING = process.argv.includes('--no-onboarding');
+    const DISABLE_ONBOARDING = process.env.JRC_SELF_HOSTED === '1' || process.argv.includes('--no-onboarding');
     if (DISABLE_ONBOARDING) {
       logToStderr('info', 'Onboarding disabled via --no-onboarding flag');
     }
@@ -54,7 +60,7 @@ async function runServer() {
 
     // Create transport FIRST so all logging gets properly buffered
     // This must happen before any code that might use logger.*
-    const transport = new FilteredStdioServerTransport();
+    const transport = new FilteredStdioServerTransport(process.env.JRC_SELF_HOSTED === '1' ? MAX_MESSAGE_BYTES - 1024 : undefined);
 
     // Export transport for use throughout the application
     global.mcpTransport = transport;
@@ -62,12 +68,20 @@ async function runServer() {
     try {
       deferLog('info', 'Loading configuration...');
       await configManager.loadConfig();
+      if (SELF_HOSTED_ENGINE) {
+        if (!SELF_HOSTED_WORKSPACE || !path.isAbsolute(SELF_HOSTED_WORKSPACE)) {
+          throw new Error('Self-hosted engine requires an absolute workspace.');
+        }
+        await configManager.setValue('telemetryEnabled', false);
+      }
       deferLog('info', 'Configuration loaded successfully');
 
       // Initialize feature flags (non-blocking)
       deferLog('info', 'Initializing feature flags...');
       await featureFlagManager.initialize();
     } catch (configError) {
+      // A remote engine must never continue with missing access configuration.
+      if (process.env.JRC_SELF_HOSTED === '1') throw configError;
       deferLog('error', `Failed to load configuration: ${configError instanceof Error ? configError.message : String(configError)}`);
       if (configError instanceof Error && configError.stack) {
         deferLog('debug', `Stack trace: ${configError.stack}`);
@@ -136,13 +150,29 @@ async function runServer() {
       transport.sendLog('info', 'MCP fully initialized, all startup messages sent');
 
       // Preemptively check/download Chrome for PDF generation (runs in background)
-      ensureChromeAvailable();
+      if (process.env.JRC_SELF_HOSTED !== '1') ensureChromeAvailable();
 
       // Load the Excel, DOCX and PDF packages, one at a time, now that initialize
       // has been answered; until then the calls that need them answer at once
-      preloadFileSupport();
+      if (process.env.JRC_SELF_HOSTED !== '1') preloadFileSupport();
     };
 
+    if (process.env.JRC_SELF_HOSTED === '1') {
+      let closing = false;
+      const stop = async () => {
+        if (closing) return;
+        closing = true;
+        searchManager.dispose();
+        featureFlagManager.destroy();
+        await Promise.allSettled(terminalManager.listActiveSessions().map(({pid}) => terminalManager.forceTerminate(pid)));
+        await toolHistory.cleanup();
+        await server.close();
+        exitProcess(0);
+      };
+      process.stdin.once('end', () => { void stop(); });
+      process.once('SIGTERM', () => { void stop(); });
+      process.once('SIGINT', () => { void stop(); });
+    }
     await server.connect(transport);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

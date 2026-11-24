@@ -126,12 +126,10 @@ function updateVersionFiles(newVersion) {
     const serverJsonPath = path.join(process.cwd(), 'server.json');
     const serverJson = JSON.parse(fs.readFileSync(serverJsonPath, 'utf8'));
     serverJson.version = newVersion;
-    if (serverJson.packages && serverJson.packages.length > 0) {
-        serverJson.packages.forEach(p => {
-            if (p.registryType === 'npm' && p.identifier === '@wonderwhy-er/desktop-commander') {
-                p.version = newVersion;
-            }
-        });
+    for (const entry of serverJson.packages ?? []) {
+        if (entry.registryType === 'npm' && entry.identifier === pkg.name) {
+            entry.version = newVersion;
+        }
     }
     fs.writeFileSync(serverJsonPath, JSON.stringify(serverJson, null, 2) + '\n');
 
@@ -348,6 +346,12 @@ async function publishRelease() {
 
     if (options.help) {
         showHelp();
+        return;
+    }
+
+    if (require('../package.json').private && !options.dryRun) {
+        printError('Public releases are disabled for this private package. Use npm run build:mcpb for a local desktop extension.');
+        process.exitCode = 1;
         return;
     }
 
