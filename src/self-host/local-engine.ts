@@ -7,11 +7,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { MAX_MESSAGE_BYTES, REMOTE_TOOL_NAMES, ENGINE_CALL_TIMEOUT_MS } from './protocol.js';
 import { ensurePrivateDirectory } from './private-storage.js';
+import { EngineCallError } from './device-engine.js';
+export { EngineCallError } from './device-engine.js';
 
 export interface EngineOptions { stateDir:string; workspace:string; }
-export class EngineCallError extends Error {
-  constructor(message:string, public readonly execution:'not_started'|'completed') { super(message); this.name='EngineCallError'; }
-}
 
 /** Each device owns one upstream stdio process; no upstream globals enter the relay. */
 export class LocalEngine {

@@ -42,6 +42,14 @@ node dist/npm-scripts/verify-ripgrep.js
 
 Skipping dependency lifecycle scripts avoids the upstream package's installation tracking and automatic setup steps. Then explicitly rebuild only the trusted `@vscode/ripgrep` package: its installer downloads the platform-specific search binary needed by agents. The explicit build compiles the application, and the last command checks that ripgrep is available. Complete these steps on every computer that will run an agent. The private entrypoint is `npm run self-host -- …`, or `node dist/self-host/cli.js …` after building.
 
+### Portable Windows USB file test
+
+The Windows USB pilot includes an official Node.js runtime and a one-file agent. Choose the x64 ZIP for Intel/AMD Windows, or arm64 for Windows on ARM, and extract the whole folder. No separate Node.js, npm, Git or administrator setup is needed on the target. Obtain approval before running it on a work computer.
+
+Start with **CHECK-USB.cmd** and enter `CHECK` to try a temporary, offline loopback test. **START-PILOT.cmd** is the separate paired test. It asks for an approved server address and a one-use code, or confirmation to reconnect with a saved identity. Its file operations are limited locally to the one disposable text file shown in the console. Each session uses a fresh workspace. The package has no remote terminal, no automatic startup, and stores its device credential under the user's protected LocalAppData. See the [included USB instructions](../deploy/windows-usb/README.txt).
+
+To build from a committed revision, install locked build dependencies and run `node scripts/build-windows-usb.mjs --arch x64 --output Commander-USB-x64.zip` (or `--arch arm64`). The ZIP includes a build manifest, runtime and dependency licenses; the builder writes a SHA-256 file beside it. Native Windows qualification runs the .cmd launchers from an extracted archive without a system Node on PATH.
+
 ### Windows storage and first pilot
 
 Use a supported Windows installation with local NTFS storage and Windows PowerShell available. Run the agent as your normal user. Windows defaults now put state under `%LOCALAPPDATA%\JimmyRemoteCommander`, outside the checkout: `server\owner-token`, `agent.json`, and `pairing-code`. Explicit path options still override the defaults. The Unix examples below use explicit `.self-host` paths; for Windows prefer the LocalAppData defaults or explicit paths there.
